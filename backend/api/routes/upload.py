@@ -87,6 +87,7 @@ async def upload_weekly_plan(
     
     try:
         # Parse Excel file
+        print(f"📄 Parsing Excel file: {file.filename}")
         parser = ExcelParser(str(file_path))
         parsed_data = parser.parse_all(week_start_date)
         
@@ -96,8 +97,11 @@ async def upload_weekly_plan(
             parsed_data['school_days']
         )
         
+        print(f"📅 Week: {week_start_date}, Season: {season}, School: {school_status}")
+        
         # Clear existing data if action is "replace"
         if action == "replace":
+            print("🗑️  Clearing existing week data...")
             await db_service.clear_week_data(week_start_date)
         
         # Track records created
@@ -109,13 +113,17 @@ async def upload_weekly_plan(
         }
         
         # 1. Insert/Update Drivers
+        print("👥 Inserting/updating drivers...")
         driver_id_map = {}  # Map driver name to driver_id
         for driver_data in parsed_data['drivers']:
             driver_id = await db_service.upsert_driver(driver_data)
             driver_id_map[driver_data['name']] = driver_id
             records_created['drivers'] += 1
         
+        print(f"✅ Created/updated {records_created['drivers']} drivers")
+        
         # 2. Insert Routes
+        print("🚌 Inserting routes...")
         route_id_map = {}  # Map (route_name, date) to route_id
         for route_data in parsed_data['routes']:
             route_id = await db_service.create_route(route_data)
@@ -123,7 +131,10 @@ async def upload_weekly_plan(
             route_id_map[key] = route_id
             records_created['routes'] += 1
         
+        print(f"✅ Created {records_created['routes']} routes")
+        
         # 3. Insert Availability - Public Holidays (all drivers)
+        print("🎉 Processing public holidays...")
         for holiday in parsed_data['public_holidays']:
             for driver_name, driver_id in driver_id_map.items():
                 # Only add if within the week
@@ -137,6 +148,7 @@ async def upload_weekly_plan(
                     records_created['driver_availability'] += 1
         
         # 4. Insert Fixed Assignments & "frei" Availability
+        print("📌 Processing fixed assignments...")
         for driver_data in parsed_data['drivers']:
             driver_id = driver_id_map[driver_data['name']]
             
@@ -146,7 +158,7 @@ async def upload_weekly_plan(
             else:
                 fixed_route = driver_data['details'].get('fixed_route_without_school')
             
-            if not fixed_route:
+            if not fixed_route or fixed_route == 'None':
                 continue
             
             # Handle "frei" - mark unavailable
@@ -210,35 +222,43 @@ async def upload_weekly_plan(
                         })
                         records_created['fixed_assignments'] += 1
         
+        print(f"✅ Created {records_created['fixed_assignments']} fixed assignments")
+        
         # 5. Apply Manual Unavailability (from user input)
-        for unavailable in unavailable_list:
-            driver_name = unavailable.get('driver_name')
-            dates = unavailable.get('dates', [])
-            reason = unavailable.get('reason', 'Manually set unavailable')
-            
-            if driver_name not in driver_id_map:
-                continue
-            
-            driver_id = driver_id_map[driver_name]
-            
-            for date_str in dates:
-                try:
-                    unavail_date = date.fromisoformat(date_str)
-                    await db_service.create_availability({
-                        'driver_id': driver_id,
-                        'date': unavail_date,
-                        'available': False,
-                        'notes': reason
-                    })
-                                            records_created['driver_availability'] += 1
-                except ValueError:
+        if unavailable_list:
+            print("📝 Processing manual unavailability...")
+            for unavailable in unavailable_list:
+                driver_name = unavailable.get('driver_name')
+                dates = unavailable.get('dates', [])
+                reason = unavailable.get('reason', 'Manually set unavailable')
+                
+                if driver_name not in driver_id_map:
                     continue
+                
+                driver_id = driver_id_map[driver_name]
+                
+                for date_str in dates:
+                    try:
+                        unavail_date = date.fromisoformat(date_str)
+                        await db_service.create_availability({
+                            'driver_id': driver_id,
+                            'date': unavail_date,
+                            'available': False,
+                            'notes': reason
+                        })
+                        records_created['driver_availability'] += 1
+                    except ValueError:
+                        continue
+        
+        print(f"✅ Created {records_created['driver_availability']} availability records")
         
         # Clean up uploaded file
         try:
             os.remove(file_path)
         except:
             pass
+        
+        print(f"🎉 Upload complete!")
         
         return UploadResponse(
             success=True,
@@ -256,6 +276,11 @@ async def upload_weekly_plan(
             os.remove(file_path)
         except:
             pass
+        
+        # Print full error for debugging
+        import traceback
+        print(f"❌ Error during upload: {str(e)}")
+        print(traceback.format_exc())
         
         # Re-raise as HTTPException
         raise HTTPException(

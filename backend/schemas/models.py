@@ -35,12 +35,13 @@ class UploadResponse(BaseModel):
 
 class DriverDetails(BaseModel):
     """Driver details stored in JSONB"""
-    monthly_hours_target: Optional[float] = None
+    type: Optional[str] = None  # "full_time", "reduced_hours", "part_time"
+    monthly_hours_target: Optional[str] = None  # HH:MM format
+    monthly_hours_worked: Optional[str] = None  # HH:MM format
+    monthly_hours_remaining: Optional[str] = None  # HH:MM format
+    feiertag_hours: Optional[str] = None  # HH:MM format
+    krankenstand_hours: Optional[str] = None  # HH:MM format
     employment_percentage: Optional[int] = None
-    vacation_hours: Optional[float] = None  # Feiertag - for display only
-    sick_leave_hours: Optional[float] = None  # Krankenstand - for display only
-    hours_worked_this_month: Optional[float] = None
-    remaining_hours_this_month: Optional[float] = None
     fixed_route_with_school: Optional[str] = None
     fixed_route_without_school: Optional[str] = None
 

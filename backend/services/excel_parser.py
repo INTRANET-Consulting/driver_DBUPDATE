@@ -9,9 +9,9 @@ class ExcelParser:
     """
     Parses weekly planning Excel file with 4 sheets:
     1. Dienste (Routes)
-    2. Lenker (Drivers)
+    2. Lenker (Drivers) - formerly "Feldkirchen 202507"
     3. Feiertag (Public Holidays)
-    4. Dienstplan (Weekly Planning Grid)
+    4. Dienstplan (Weekly Planning Grid) - formerly "DP-Vorlage"
     """
     
     def __init__(self, file_path: str):
@@ -42,11 +42,15 @@ class ExcelParser:
     
     def parse_all(self, week_start: date) -> Dict[str, Any]:
         """Parse all sheets and return structured data"""
-        # Parse each sheet
-        self.parse_dienste_sheet(week_start)
+        # Parse Lenker sheet first to get driver base info
         self.parse_lenker_sheet()
-        self.parse_feiertag_sheet()
+        
+        # Parse Dienstplan sheet to get worked hours and update driver info
         self.parse_dienstplan_sheet(week_start)
+        
+        # Parse other sheets
+        self.parse_dienste_sheet(week_start)
+        self.parse_feiertag_sheet()
         
         return self.data
     
@@ -99,7 +103,7 @@ class ExcelParser:
                 continue
             
             # Skip special entries (we'll handle them separately)
-            if dienst_nr in ['FT', 'K', 'FREI', 'U', 'SOF', 'MB', 'DI']:
+            if dienst_nr in ['FT', 'K', 'FREI', 'F', 'U', 'SOF', 'MB', 'DI']:
                 continue
             
             route_defs[str(dienst_nr).strip()] = {
@@ -245,73 +249,113 @@ class ExcelParser:
     # ============= SHEET 2: LENKER (DRIVERS) =============
     
     def parse_lenker_sheet(self):
-        """Parse drivers sheet with availability and fixed assignments"""
-        sheet = self._find_sheet('Lenker', 'Drivers', 'lenker')
+        """Parse drivers sheet - base information"""
+        sheet = self._find_sheet('Lenker', 'Drivers', 'lenker', 'Feldkirchen')
         
         if not sheet:
-            print("⚠️  Drivers sheet not found (looking for 'Lenker')")
+            print("⚠️  Drivers sheet not found (looking for 'Lenker' or 'Feldkirchen')")
             print(f"   Available sheets: {self.workbook.sheetnames}")
             return
         
-        # Find header row
-        header_row = None
-        for row_idx in range(1, 10):
-            row = sheet[row_idx]
-            if row[0].value == 'Lenker' or row[0].value == 'Name':
-                header_row = row_idx
-                break
+        # Check if first row is header or data
+        first_cell = sheet.cell(1, 1).value
+        print(f"🔍 First cell value: '{first_cell}'")
         
-        if not header_row:
-            print("⚠️ Could not find header row in Lenker sheet")
-            return
+        if first_cell in ['Lenker', 'Name']:
+            # Has header row
+            start_row = 2
+            print(f"✅ Found Lenker header at row 1, data starts at row 2")
+        else:
+            # No header, data starts at row 1
+            start_row = 1
+            print(f"✅ Lenker sheet has no header, data starts at row 1")
+        
+        # Debug: Print header row values
+        print(f"🔍 Header row contents:")
+        for col in range(1, 9):
+            print(f"   Col {col}: '{sheet.cell(1, col).value}'")
+        
+        # Debug: Print first data row
+        print(f"🔍 First data row (row {start_row}) contents:")
+        for col in range(1, 9):
+            val = sheet.cell(start_row, col).value
+            print(f"   Col {col}: '{val}' (type: {type(val).__name__})")
         
         # Parse each driver row
-        for row_idx in range(header_row + 1, sheet.max_row + 1):
-            row = sheet[row_idx]
+        for row_idx in range(start_row, sheet.max_row + 1):
+            driver_name = sheet.cell(row_idx, 1).value
             
-            driver_name = row[0].value
             if not driver_name or driver_name == '':
                 break
             
-            # Parse driver data
-            soll_std = self._parse_hours(row[1].value)  # Target hours
-            b_grad = self._parse_percentage(row[2].value)  # Employment %
-            feiertag_hours = self._parse_hours(row[3].value)  # Vacation hours
-            krankenstand_hours = self._parse_hours(row[4].value)  # Sick hours
-            fixdienst_ms = row[5].value  # Fixed route with school
-            fixdienst_os = row[6].value  # Fixed route without school
+            # Skip summary rows
+            driver_name_str = str(driver_name).strip()
+            if any(keyword in driver_name_str for keyword in ['Summe', 'Vollzeit', 'Feiertagsvergütung', 'Krankenstand']):
+                print(f"  ⏭️  Skipping summary row: {driver_name_str}")
+                break
             
-            # Add driver
+            # Parse driver data - DIRECTLY read cell values
+            col2 = sheet.cell(row_idx, 2).value  # Soll-Std.
+            col3 = sheet.cell(row_idx, 3).value  # B-Grad [%]
+            col4 = sheet.cell(row_idx, 4).value  # Feiertag
+            col5 = sheet.cell(row_idx, 5).value  # Urlaub (not used)
+            col6 = sheet.cell(row_idx, 6).value  # Krankenstand
+            col7 = sheet.cell(row_idx, 7).value  # Fixdienst m.S.
+            col8 = sheet.cell(row_idx, 8).value  # Fixdienst o.S.
+            
+            # Debug raw values for first 3 drivers
+            if row_idx <= start_row + 2:
+                print(f"  🔍 Row {row_idx} RAW: col2={col2}, col3={col3}, col4={col4}, col6={col6}")
+            
+            # Now parse them
+            soll_std = self._parse_time_to_hours(col2)
+            b_grad = self._parse_percentage(col3)
+            feiertag_hours = self._parse_time_to_hours(col4)
+            krankenstand_hours = self._parse_time_to_hours(col6)
+            fixdienst_ms = col7
+            fixdienst_os = col8
+            
+            # Determine employment type based on B-Grad
+            employment_type = self._determine_employment_type(b_grad)
+            
+            # Debug print
+            print(f"  📋 {driver_name_str}: Soll={soll_std}, B-Grad={b_grad}%, Type={employment_type}")
+            
+            # Add driver with base info
             self.data['drivers'].append({
-                'name': str(driver_name).strip(),
+                'name': driver_name_str,
                 'details': {
+                    'type': employment_type,
                     'monthly_hours_target': soll_std,
+                    'monthly_hours_worked': None,  # Will be filled from Dienstplan
+                    'monthly_hours_remaining': None,  # Will be calculated
+                    'feiertag_hours': feiertag_hours,
+                    'krankenstand_hours': krankenstand_hours,
                     'employment_percentage': b_grad,
-                    'vacation_hours': feiertag_hours,
-                    'sick_leave_hours': krankenstand_hours,
-                    'fixed_route_with_school': str(fixdienst_ms).strip() if fixdienst_ms else None,
-                    'fixed_route_without_school': str(fixdienst_os).strip() if fixdienst_os else None
+                    'fixed_route_with_school': str(fixdienst_ms).strip() if fixdienst_ms and fixdienst_ms != 'None' else None,
+                    'fixed_route_without_school': str(fixdienst_os).strip() if fixdienst_os and fixdienst_os != 'None' else None
                 }
             })
+        
+        print(f"✅ Parsed {len(self.data['drivers'])} drivers from Lenker sheet")
     
     # ============= SHEET 3: FEIERTAG (PUBLIC HOLIDAYS) =============
     
     def parse_feiertag_sheet(self):
-        """Parse public holidays sheet (OPTIONAL)"""
+        """Parse public holidays sheet"""
         sheet = self._find_sheet('Feiertag', 'Holidays', 'feiertag', 'Feiertage', 'Freedays')
         
         if not sheet:
             print("ℹ️  Holidays sheet not found - skipping (this is optional)")
-            # This is OK - holidays can be marked in other ways
             return
         
         # Find data (usually starts around row 2-3)
-        for row_idx in range(1, sheet.max_row + 1):
+        for row_idx in range(2, sheet.max_row + 1):
             row = sheet[row_idx]
             
-            # Assuming columns: Date, Holiday Name
-            holiday_date = row[0].value
-            holiday_name = row[1].value if len(row) > 1 else "Feiertag"
+            # Assuming columns: Feiertag, Datum
+            holiday_name = row[0].value
+            holiday_date = row[1].value
             
             if isinstance(holiday_date, datetime):
                 holiday_date = holiday_date.date()
@@ -323,11 +367,13 @@ class ExcelParser:
                     'date': holiday_date,
                     'name': str(holiday_name).strip()
                 })
+        
+        print(f"✅ Parsed {len(self.data['public_holidays'])} public holidays")
     
     # ============= SHEET 4: DIENSTPLAN (WEEKLY PLANNING) =============
     
     def parse_dienstplan_sheet(self, week_start: date):
-        """Parse weekly planning sheet - extract remaining hours and school status"""
+        """Parse weekly planning sheet - extract worked hours and update driver info"""
         sheet = self._find_sheet('Dienstplan', 'DP-Vorlage', 'Planning', 'dienstplan', 'Schedule')
         
         if not sheet:
@@ -335,74 +381,194 @@ class ExcelParser:
             print(f"   Available sheets: {self.workbook.sheetnames}")
             return
         
-        # Find driver list section (left side)
+        # Find driver list section - look for "Lenker" in column A
         driver_header_row = None
         for row_idx in range(1, 20):
-            row = sheet[row_idx]
-            if row[0].value in ['Lenker', 'Name']:
+            cell_value = sheet.cell(row_idx, 1).value
+            if cell_value and 'Lenker' in str(cell_value):
                 driver_header_row = row_idx
                 break
         
         if not driver_header_row:
+            print("⚠️ Could not find driver header in Dienstplan sheet")
             return
+        
+        print(f"✅ Found Dienstplan header at row {driver_header_row}, data starts at row {driver_header_row + 1}")
+        
+        # Debug: Show header row
+        print(f"🔍 Header row {driver_header_row}:")
+        for col in range(1, 8):
+            print(f"   Col {col}: '{sheet.cell(driver_header_row, col).value}'")
+        
+        # Debug: Show first data row
+        first_data_row = driver_header_row + 1
+        print(f"🔍 First data row {first_data_row}:")
+        for col in range(1, 8):
+            val = sheet.cell(first_data_row, col).value
+            print(f"   Col {col}: '{val}' (type: {type(val).__name__})")
         
         # Parse driver hours
         for row_idx in range(driver_header_row + 1, sheet.max_row + 1):
-            row = sheet[row_idx]
+            driver_name = sheet.cell(row_idx, 1).value
             
-            driver_name = row[0].value
             if not driver_name or driver_name == '':
                 break
             
-            soll_std = self._parse_hours(row[1].value)  # Monthly target
-            ist_std = self._parse_hours(row[2].value)   # Already worked
+            driver_name_str = str(driver_name).strip()
             
-            # Calculate remaining
-            remaining = soll_std - ist_std if (soll_std and ist_std) else None
+            # Skip summary/legend rows
+            if any(keyword in driver_name_str for keyword in ['Legende', 'mS', 'oS', 'LD', 'RD', 'FT', 'Madrutter :', 'Dienst']):
+                print(f"  ⏭️  Reached end/legend section at row {row_idx}: '{driver_name_str}'")
+                break
             
-            # Update driver data with remaining hours
+            # Read Ist-Std from column C (index 3)
+            ist_std_raw = sheet.cell(row_idx, 3).value
+            ist_std = self._parse_time_to_hours(ist_std_raw)
+            
+            # Debug for first 3 drivers
+            if row_idx <= driver_header_row + 3:
+                print(f"  🔍 Row {row_idx}: Name='{driver_name_str}', Ist-Std RAW (col 3)='{ist_std_raw}' -> Parsed='{ist_std}'")
+            
+            # Find matching driver in self.data['drivers'] and update
+            matched = False
             for driver in self.data['drivers']:
-                if driver['name'] == str(driver_name).strip():
-                    driver['details']['hours_worked_this_month'] = ist_std
-                    driver['details']['remaining_hours_this_month'] = remaining
+                if driver['name'] == driver_name_str:
+                    target = driver['details']['monthly_hours_target']
+                    
+                    # Calculate remaining hours
+                    remaining = self._subtract_time(target, ist_std) if target and ist_std else None
+                    
+                    driver['details']['monthly_hours_worked'] = ist_std
+                    driver['details']['monthly_hours_remaining'] = remaining
+                    
+                    print(f"  ✅ {driver_name_str}: Target={target}, Worked={ist_std}, Remaining={remaining}")
+                    matched = True
                     break
+            
+            if not matched:
+                print(f"  ⚠️ No match found in Lenker data for: '{driver_name_str}'")
         
-        # Parse calendar section (right side) to extract school status
-        # Find the date row
-        date_row_idx = None
-        for row_idx in range(1, 20):
-            row = sheet[row_idx]
-            # Look for dates in cells
-            for col_idx in range(3, min(20, sheet.max_column + 1)):
+        # Parse calendar section - Find "Datum" row for school status
+        datum_row = None
+        for row_idx in range(1, 10):
+            for col_idx in range(1, 20):
                 cell_value = sheet.cell(row_idx, col_idx).value
-                if isinstance(cell_value, datetime):
-                    date_row_idx = row_idx
+                if cell_value and 'Datum' in str(cell_value):
+                    datum_row = row_idx
                     break
-            if date_row_idx:
+            if datum_row:
                 break
         
-        if date_row_idx:
-            # Row above dates usually has "Schule" or "Schulfrei" indicators
-            school_status_row_idx = date_row_idx - 1
+        if datum_row:
+            # School status (mS/oS) is 2 rows above Datum
+            school_status_row = datum_row - 2
+            # Dates are in the Datum row
+            date_row = datum_row
             
-            # Parse school status for each date column
-            for col_idx in range(3, min(20, sheet.max_column + 1)):
-                date_cell = sheet.cell(date_row_idx, col_idx).value
-                school_cell = sheet.cell(school_status_row_idx, col_idx).value
-                
-                if isinstance(date_cell, datetime):
-                    current_date = date_cell.date()
+            print(f"✅ Found calendar section: School status at row {school_status_row}, Dates at row {date_row}")
+            
+            # Find which column the dates start (look for "Datum" text)
+            date_start_col = None
+            for col_idx in range(1, 20):
+                if sheet.cell(datum_row, col_idx).value == 'Datum':
+                    date_start_col = col_idx + 1  # Dates start in next column
+                    break
+            
+            if date_start_col:
+                # Parse school status for each date column
+                for col_idx in range(date_start_col, min(date_start_col + 50, sheet.max_column + 1)):
+                    date_cell = sheet.cell(date_row, col_idx).value
+                    school_cell = sheet.cell(school_status_row, col_idx).value
+                    
+                    # Parse date
+                    current_date = None
+                    if isinstance(date_cell, datetime):
+                        current_date = date_cell.date()
+                    elif isinstance(date_cell, date):
+                        current_date = date_cell
+                    elif isinstance(date_cell, str):
+                        current_date = self._parse_date(date_cell)
+                    
+                    if not current_date:
+                        # No more dates, stop
+                        break
                     
                     # Check school status
                     is_school_day = True
                     if school_cell and isinstance(school_cell, str):
                         school_text = str(school_cell).lower()
-                        if 'frei' in school_text or 'ohne' in school_text:
+                        if 'frei' in school_text or 'ohne' in school_text or 'schulfrei' in school_text:
                             is_school_day = False
                     
                     self.data['school_days'][current_date] = is_school_day
+        
+        print(f"✅ Parsed school days for {len(self.data['school_days'])} dates")
     
     # ============= HELPER METHODS =============
+    
+    def _determine_employment_type(self, percentage: Optional[int]) -> str:
+        """Determine employment type based on percentage"""
+        if not percentage:
+            return "unknown"
+        
+        if percentage >= 100:
+            return "full_time"
+        elif percentage >= 80:
+            return "reduced_hours"
+        else:
+            return "part_time"
+    
+    def _parse_time_to_hours(self, value) -> Optional[str]:
+        """Parse time value and return as HH:MM string"""
+        if value is None:
+            return None
+        
+        if isinstance(value, datetime):
+            return value.strftime('%H:%M')
+        
+        if isinstance(value, str):
+            value = value.strip()
+            # Handle "00:00" or empty
+            if value == "00:00" or value == "":
+                return "00:00"
+            # Check if already in HH:MM format
+            if ':' in value:
+                return value
+            return value
+        
+        if isinstance(value, (int, float)):
+            # Convert decimal hours to HH:MM
+            hours = int(value)
+            minutes = int((value - hours) * 60)
+            return f"{hours:02d}:{minutes:02d}"
+        
+        return None
+    
+    def _subtract_time(self, time1: str, time2: str) -> str:
+        """Subtract time2 from time1 (both in HH:MM format)"""
+        try:
+            # Parse time1
+            h1, m1 = map(int, time1.split(':'))
+            total_minutes1 = h1 * 60 + m1
+            
+            # Parse time2
+            h2, m2 = map(int, time2.split(':'))
+            total_minutes2 = h2 * 60 + m2
+            
+            # Subtract
+            result_minutes = total_minutes1 - total_minutes2
+            
+            # Handle negative results
+            if result_minutes < 0:
+                result_minutes = 0
+            
+            # Convert back to HH:MM
+            hours = result_minutes // 60
+            minutes = result_minutes % 60
+            
+            return f"{hours:02d}:{minutes:02d}"
+        except:
+            return "00:00"
     
     def _determine_season_and_school(self, week_start: date) -> Tuple[str, str]:
         """Determine season and school status for given week"""
@@ -501,34 +667,6 @@ class ExcelParser:
         
         return None
     
-    def _parse_hours(self, value) -> Optional[float]:
-        """Parse hours from HH:MM format or decimal"""
-        if value is None:
-            return None
-        
-        if isinstance(value, (int, float)):
-            return float(value)
-        
-        if isinstance(value, str):
-            # Handle HH:MM format
-            if ':' in value:
-                parts = value.split(':')
-                if len(parts) == 2:
-                    try:
-                        hours = int(parts[0])
-                        minutes = int(parts[1])
-                        return hours + (minutes / 60)
-                    except ValueError:
-                        return None
-            
-            # Handle decimal
-            try:
-                return float(value.replace(',', '.'))
-            except ValueError:
-                return None
-        
-        return None
-    
     def _parse_percentage(self, value) -> Optional[int]:
         """Parse percentage value"""
         if value is None:
@@ -571,3 +709,4 @@ class ExcelParser:
                     continue
         
         return None
+        
