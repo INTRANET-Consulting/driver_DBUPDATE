@@ -1,0 +1,138 @@
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+import google.auth.transport.requests
+from config.settings import settings
+import os
+from typing import Optional
+
+
+class GoogleSheetsService:
+    """Service for syncing Excel files to Google Sheets"""
+    
+    def __init__(self):
+        self.credentials = None
+        self.drive_service = None
+        self._initialize_credentials()
+    
+    def _initialize_credentials(self):
+        """Initialize Google API credentials"""
+        if not settings.ENABLE_GOOGLE_SHEETS_SYNC:
+            print("ℹ️  Google Sheets sync is disabled")
+            return
+        
+        credentials_path = settings.GOOGLE_CREDENTIALS_FILE
+        
+        if not os.path.exists(credentials_path):
+            print(f"⚠️  Google credentials file not found: {credentials_path}")
+            print("   Google Sheets sync will be disabled for this session")
+            return
+        
+        try:
+            print(f"🔐 Loading Google credentials from: {credentials_path}")
+            self.credentials = service_account.Credentials.from_service_account_file(
+                credentials_path,
+                scopes=['https://www.googleapis.com/auth/drive']
+            )
+            
+            # Force token refresh
+            print("🔄 Refreshing authentication token...")
+            request = google.auth.transport.requests.Request()
+            self.credentials.refresh(request)
+            
+            # Build Drive service
+            self.drive_service = build('drive', 'v3', credentials=self.credentials)
+            print("✅ Google Sheets service initialized successfully")
+            
+        except Exception as e:
+            print(f"❌ Failed to initialize Google Sheets service: {str(e)}")
+            self.credentials = None
+            self.drive_service = None
+    
+    async def upload_excel_to_sheet(
+        self, 
+        excel_file_path: str, 
+        sheet_name: Optional[str] = None
+    ) -> Optional[dict]:
+        """
+        Upload/replace Google Sheet with Excel file
+        
+        Args:
+            excel_file_path: Path to the Excel file
+            sheet_name: Name of the Google Sheet (defaults to settings.GOOGLE_SHEET_NAME)
+        
+        Returns:
+            dict with file info if successful, None if failed
+        """
+        if not self.drive_service:
+            print("⚠️  Google Sheets service not available - skipping sync")
+            return None
+        
+        if sheet_name is None:
+            sheet_name = settings.GOOGLE_SHEET_NAME
+        
+        try:
+            print(f"\n📊 Syncing to Google Sheet: '{sheet_name}'")
+            
+            # Find the Google Sheet
+            print(f"🔍 Looking for sheet: '{sheet_name}'...")
+            query = f"name='{sheet_name}' and mimeType='application/vnd.google-apps.spreadsheet'"
+            results = self.drive_service.files().list(
+                q=query, 
+                fields="files(id, name, webViewLink)"
+            ).execute()
+            
+            files = results.get('files', [])
+            
+            if not files:
+                print(f"❌ ERROR: Sheet '{sheet_name}' not found in Google Drive!")
+                print("💡 Make sure:")
+                print("   1. The sheet exists in Google Drive")
+                print("   2. The sheet name matches exactly")
+                print("   3. The service account has access to it")
+                return None
+            
+            file_id = files[0]['id']
+            web_link = files[0].get('webViewLink', 'N/A')
+            print(f"✅ Found sheet with ID: {file_id}")
+            print(f"🔗 Sheet link: {web_link}")
+            
+            # Upload Excel and replace content
+            print(f"📤 Uploading Excel file...")
+            media = MediaFileUpload(
+                excel_file_path,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                resumable=True
+            )
+            
+            updated_file = self.drive_service.files().update(
+                fileId=file_id,
+                media_body=media,
+                fields='id, name, webViewLink, modifiedTime'
+            ).execute()
+            
+            print("\n" + "="*50)
+            print("🎉 SUCCESS! Google Sheet updated!")
+            print("="*50)
+            print(f"📊 Sheet name: {updated_file.get('name')}")
+            print(f"🆔 File ID: {updated_file.get('id')}")
+            print(f"🔗 View sheet: {updated_file.get('webViewLink')}")
+            print(f"⏰ Last modified: {updated_file.get('modifiedTime')}")
+            print("="*50)
+            
+            return updated_file
+            
+        except Exception as e:
+            print(f"\n❌ ERROR syncing to Google Sheets: {str(e)}")
+            import traceback
+            print("📋 Full error details:")
+            traceback.print_exc()
+            return None
+    
+    def is_available(self) -> bool:
+        """Check if Google Sheets service is available"""
+        return self.drive_service is not None
+
+
+# Global Google Sheets service instance
+google_sheets_service = GoogleSheetsService()

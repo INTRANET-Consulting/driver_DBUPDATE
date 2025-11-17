@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # CORS
     FRONTEND_URL: str = "http://localhost:3000"
     
+    # Google Sheets Integration
+    GOOGLE_CREDENTIALS_FILE: str = "service-account-credentials.json"
+    GOOGLE_SHEET_NAME: str = "Bachertest"
+    ENABLE_GOOGLE_SHEETS_SYNC: bool = True
+    
     class Config:
         env_file = ".env"
         case_sensitive = True

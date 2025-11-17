@@ -10,6 +10,7 @@ from pathlib import Path
 from database.connection import get_db
 from services.excel_parser import ExcelParser
 from services.database_service import DatabaseService
+from services.google_sheets_service import google_sheets_service
 from schemas.models import UploadResponse, UnavailableDriver
 from config.settings import settings
 import json
@@ -23,6 +24,8 @@ async def upload_weekly_plan(
     week_start: str = Form(...),  # ISO format: YYYY-MM-DD
     action: str = Form(default="replace"),  # "replace" or "append"
     unavailable_drivers: Optional[str] = Form(default="[]"),  # JSON string
+    sync_to_google_sheets: Optional[bool] = Form(default=True),  # Enable/disable sync
+    google_sheet_name: Optional[str] = Form(default=None),  # Override sheet name
     conn: asyncpg.Connection = Depends(get_db)
 ):
     """
@@ -36,14 +39,16 @@ async def upload_weekly_plan(
     - action: "replace" (clear old data) or "append" (keep old data)
     - unavailable_drivers: JSON array of manually set unavailable drivers
       Format: [{"driver_name": "Name", "dates": ["YYYY-MM-DD", ...], "reason": "optional"}]
+    - sync_to_google_sheets: Whether to sync to Google Sheets (default: True)
+    - google_sheet_name: Override the Google Sheet name (optional)
     
     Returns:
     - Success status, week info, season, records created
     """
     
     # Validate file type
-    if not file.filename.endswith(('.xlsx', '.xls')):
-        raise HTTPException(status_code=400, detail="File must be Excel format (.xlsx or .xls)")
+    if not file.filename.endswith(('.xlsx', '.xls', '.xlsm')):
+        raise HTTPException(status_code=400, detail="File must be Excel format (.xlsx, .xls, or .xlsm)")
     
     # Parse week_start
     try:
@@ -109,7 +114,34 @@ async def upload_weekly_plan(
     # Initialize database service
     db_service = DatabaseService(conn)
     
+    # Track Google Sheets sync result
+    google_sheets_result = None
+    
     try:
+        # === GOOGLE SHEETS SYNC (BEFORE DATABASE PROCESSING) ===
+        if sync_to_google_sheets and settings.ENABLE_GOOGLE_SHEETS_SYNC:
+            print("\n" + "="*60)
+            print("📊 GOOGLE SHEETS SYNC")
+            print("="*60)
+            
+            if google_sheets_service.is_available():
+                google_sheets_result = await google_sheets_service.upload_excel_to_sheet(
+                    str(file_path),
+                    sheet_name=google_sheet_name
+                )
+                
+                if google_sheets_result:
+                    print("✅ Google Sheets sync completed successfully")
+                else:
+                    print("⚠️  Google Sheets sync failed, but continuing with database processing")
+            else:
+                print("⚠️  Google Sheets service not available - skipping sync")
+            
+            print("="*60 + "\n")
+        else:
+            print("ℹ️  Google Sheets sync disabled for this upload")
+        
+        # === DATABASE PROCESSING ===
         # Parse Excel file
         print(f"📄 Parsing Excel file: {file.filename}")
         parser = ExcelParser(str(file_path))
@@ -179,7 +211,7 @@ async def upload_weekly_plan(
             assignment_date = assignment['date']
             
             if driver_name not in driver_id_map:
-                print(f"   ⚠️ Driver '{driver_name}' not found - skipping")
+                print(f"   ⚠️  Driver '{driver_name}' not found - skipping")
                 continue
             
             driver_id = driver_id_map[driver_name]
@@ -189,7 +221,7 @@ async def upload_weekly_plan(
             route_id = route_id_map.get(route_key)
             
             if not route_id:
-                print(f"   ⚠️ Route '{route_name}' on {assignment_date} not found - skipping")
+                print(f"   ⚠️  Route '{route_name}' on {assignment_date} not found - skipping")
                 continue
             
             # Insert fixed assignment (NO details column)
@@ -203,7 +235,7 @@ async def upload_weekly_plan(
         print(f"✅ Created {records_created['fixed_assignments']} fixed assignments")
         
         # 5. Process driver availability (frei, manual)
-        print("📝 Processing driver availability...")
+        print("📋 Processing driver availability...")
         
         # First, create a set of (driver_id, date) tuples for unavailable drivers
         unavailable_set = set()
@@ -234,7 +266,7 @@ async def upload_weekly_plan(
                 reason = unavailable.get('reason', 'Manually set unavailable')
                 
                 if driver_name not in driver_id_map:
-                    print(f"   ⚠️ Driver '{driver_name}' not found - skipping")
+                    print(f"   ⚠️  Driver '{driver_name}' not found - skipping")
                     continue
                 
                 driver_id = driver_id_map[driver_name]
@@ -251,7 +283,7 @@ async def upload_weekly_plan(
                         records_created['driver_availability'] += 1
                         unavailable_set.add((driver_id, unavail_date))
                     except ValueError:
-                        print(f"   ⚠️ Invalid date format: {date_str}")
+                        print(f"   ⚠️  Invalid date format: {date_str}")
                         continue
         
         # Now create availability records for ALL drivers for ALL days in the week
@@ -284,6 +316,11 @@ async def upload_weekly_plan(
         
         print(f"🎉 Upload complete!")
         
+        # Build response message
+        response_message = f"Successfully processed {file.filename}"
+        if google_sheets_result:
+            response_message += f" and synced to Google Sheet '{google_sheets_result.get('name')}'"
+        
         return UploadResponse(
             success=True,
             week_start=week_start_date,
@@ -291,7 +328,7 @@ async def upload_weekly_plan(
             school_status=school_status,
             records_created=records_created,
             action_taken=action,
-            message=f"Successfully processed {file.filename}"
+            message=response_message
         )
     
     except Exception as e:

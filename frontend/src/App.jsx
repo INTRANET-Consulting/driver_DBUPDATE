@@ -199,11 +199,11 @@ const DriverSchedulingSystem = () => {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
         <div>
           <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '8px' }}>
-            Excel File (.xlsx, .xls)
+            Excel File (.xlsx, .xls, .xlsm)
           </label>
           <input
             type="file"
-            accept=".xlsx,.xls"
+            accept=".xlsx,.xls,.xlsm"
             onChange={(e) => setFile(e.target.files[0])}
             style={{
               display: 'block',

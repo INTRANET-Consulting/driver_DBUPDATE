@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from database.connection import db_manager
 from api.routes import upload, weekly_data
 from config.settings import settings
+from services.google_sheets_service import google_sheets_service  # ← NEW IMPORT
 
 
 @asynccontextmanager
@@ -14,6 +15,12 @@ async def lifespan(app: FastAPI):
     print("🚀 Starting Driver Scheduling Upload System...")
     await db_manager.connect()
     print("✅ Database connected")
+    
+    # Check Google Sheets service status
+    if google_sheets_service.is_available():
+        print("✅ Google Sheets service is available")
+    else:
+        print("⚠️  Google Sheets service is NOT available (check credentials)")
     
     yield
     
@@ -52,6 +59,10 @@ async def root():
         "message": "Driver Scheduling Upload System API",
         "version": "1.0.0",
         "docs": "/docs",
+        "features": {
+            "database": "PostgreSQL + Supabase",
+            "google_sheets_sync": google_sheets_service.is_available()
+        },
         "endpoints": {
             "upload": "/api/v1/upload/weekly-plan",
             "weekly_routes": "/api/v1/weekly/routes",
@@ -67,7 +78,8 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "database": "connected" if db_manager.pool else "disconnected"
+        "database": "connected" if db_manager.pool else "disconnected",
+        "google_sheets": "available" if google_sheets_service.is_available() else "unavailable"
     }
 
 

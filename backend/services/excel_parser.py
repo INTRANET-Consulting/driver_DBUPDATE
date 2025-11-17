@@ -16,7 +16,8 @@ class ExcelParser:
     
     def __init__(self, file_path: str):
         self.file_path = file_path
-        self.workbook = openpyxl.load_workbook(file_path, data_only=True)
+        # keep_vba=False tells openpyxl to ignore macros and just read the data
+        self.workbook = openpyxl.load_workbook(file_path, data_only=True, keep_vba=False)
         self.data = {
             'routes': [],
             'drivers': [],
