@@ -1,0 +1,15 @@
+# 1. Go to frontend folder
+cd frontend
+
+# 2. Create package.json (copy the JSON I provided above)
+
+# 3. Install all dependencies at once
+npm install
+
+# 4. Initialize Tailwind (creates config files)
+npx tailwindcss init -p
+
+# 5. Create all the files above (copy-paste the code)
+
+# 6. Start development server
+npm run dev

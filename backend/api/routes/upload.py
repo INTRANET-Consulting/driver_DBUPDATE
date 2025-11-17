@@ -32,7 +32,7 @@ async def upload_weekly_plan(
     
     Parameters:
     - file: Excel file with 4 sheets (Dienste, Lenker, Feiertag, Dienstplan)
-    - week_start: Start date of the week (Monday, ISO format: YYYY-MM-DD)
+    - week_start: Start date of the week (MUST BE A MONDAY, ISO format: YYYY-MM-DD)
     - action: "replace" (clear old data) or "append" (keep old data)
     - unavailable_drivers: JSON array of manually set unavailable drivers
       Format: [{"driver_name": "Name", "dates": ["YYYY-MM-DD", ...], "reason": "optional"}]
@@ -50,6 +50,30 @@ async def upload_weekly_plan(
         week_start_date = date.fromisoformat(week_start)
     except ValueError:
         raise HTTPException(status_code=400, detail="week_start must be ISO format (YYYY-MM-DD)")
+    
+    # CRITICAL: Validate that week_start is a Monday
+    if week_start_date.weekday() != 0:  # Monday is 0
+        # Calculate the nearest Monday
+        days_since_monday = week_start_date.weekday()
+        nearest_previous_monday = week_start_date - timedelta(days=days_since_monday)
+        nearest_next_monday = week_start_date + timedelta(days=(7 - days_since_monday))
+        
+        day_name = week_start_date.strftime('%A')
+        
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "week_start must be a Monday",
+                "provided_date": week_start,
+                "provided_day": day_name,
+                "message": f"The date you provided ({week_start}) is a {day_name}, not a Monday.",
+                "suggestions": {
+                    "previous_monday": nearest_previous_monday.isoformat(),
+                    "next_monday": nearest_next_monday.isoformat()
+                },
+                "hint": f"Please use {nearest_previous_monday.isoformat()} (previous Monday) or {nearest_next_monday.isoformat()} (next Monday)"
+            }
+        )
     
     # Validate action
     if action not in ['replace', 'append']:
@@ -99,10 +123,10 @@ async def upload_weekly_plan(
         
         print(f"📅 Week: {week_start_date}, Season: {season}, School: {school_status}")
         
-        # Clear existing data if action is "replace"
-        if action == "replace":
-            print("🗑️  Clearing existing week data...")
-            await db_service.clear_week_data(week_start_date)
+        # ALWAYS clear ALL existing data and reset sequences
+        print("🗑️  Clearing ALL existing data from database...")
+        await db_service.clear_all_week_data()
+        print("✅ Database cleared and sequences reset")
         
         # Track records created
         records_created = {
@@ -133,12 +157,12 @@ async def upload_weekly_plan(
         
         print(f"✅ Created {records_created['routes']} routes")
         
-        # 3. Insert Availability - Public Holidays (all drivers)
+        # 3. Process Public Holidays - mark all drivers unavailable
         print("🎉 Processing public holidays...")
         for holiday in parsed_data['public_holidays']:
-            for driver_name, driver_id in driver_id_map.items():
-                # Only add if within the week
-                if week_start_date <= holiday['date'] < week_start_date + timedelta(days=7):
+            # Only add if within the week
+            if week_start_date <= holiday['date'] < week_start_date + timedelta(days=7):
+                for driver_name, driver_id in driver_id_map.items():
                     await db_service.create_availability({
                         'driver_id': driver_id,
                         'date': holiday['date'],
@@ -147,92 +171,70 @@ async def upload_weekly_plan(
                     })
                     records_created['driver_availability'] += 1
         
-        # 4. Insert Fixed Assignments & "frei" Availability
+        # 4. Process Fixed Assignments from parsed data
         print("📌 Processing fixed assignments...")
-        for driver_data in parsed_data['drivers']:
-            driver_id = driver_id_map[driver_data['name']]
+        for assignment in parsed_data['fixed_assignments']:
+            driver_name = assignment['driver_name']
+            route_name = assignment['route_name']
+            assignment_date = assignment['date']
             
-            # Determine which fixed route applies
-            if school_status == 'mit_schule':
-                fixed_route = driver_data['details'].get('fixed_route_with_school')
-            else:
-                fixed_route = driver_data['details'].get('fixed_route_without_school')
-            
-            if not fixed_route or fixed_route == 'None':
+            if driver_name not in driver_id_map:
+                print(f"   ⚠️ Driver '{driver_name}' not found - skipping")
                 continue
             
-            # Handle "frei" - mark unavailable
-            if fixed_route.lower() == 'frei':
-                for day_offset in range(7):
-                    current_date = week_start_date + timedelta(days=day_offset)
-                    # Only mark weekdays (Mon-Fri) as unavailable
-                    if current_date.weekday() < 5:
-                        await db_service.create_availability({
-                            'driver_id': driver_id,
-                            'date': current_date,
-                            'available': False,
-                            'notes': f'Fixdienst: frei ({school_status})'
-                        })
-                        records_created['driver_availability'] += 1
+            driver_id = driver_id_map[driver_name]
+            
+            # Get route_id
+            route_key = (route_name, assignment_date)
+            route_id = route_id_map.get(route_key)
+            
+            if not route_id:
+                print(f"   ⚠️ Route '{route_name}' on {assignment_date} not found - skipping")
                 continue
             
-            # Handle special duties (MB, DI, SOF)
-            if fixed_route in ['MB', 'DI', 'SOF']:
-                for day_offset in range(7):
-                    current_date = week_start_date + timedelta(days=day_offset)
-                    if current_date.weekday() < 5:  # Mon-Fri
-                        await db_service.create_fixed_assignment({
-                            'driver_id': driver_id,
-                            'route_id': None,
-                            'date': current_date,
-                            'details': {
-                                'type': 'special_duty',
-                                'duty_code': fixed_route,
-                                'duty_name': _get_duty_name(fixed_route),
-                                'blocks_regular_assignment': True
-                            }
-                        })
-                        records_created['fixed_assignments'] += 1
-                continue
-            
-            # Handle combined routes (e.g., "411 + 412")
-            route_parts = [r.strip() for r in fixed_route.split('+')]
-            
-            for day_offset in range(7):
-                current_date = week_start_date + timedelta(days=day_offset)
-                
-                # Only assign on weekdays
-                if current_date.weekday() >= 5:
-                    continue
-                
-                # Create assignment for each route part
-                for route_name in route_parts:
-                    route_key = (route_name, current_date)
-                    route_id = route_id_map.get(route_key)
-                    
-                    if route_id:
-                        await db_service.create_fixed_assignment({
-                            'driver_id': driver_id,
-                            'route_id': route_id,
-                            'date': current_date,
-                            'details': {
-                                'type': 'regular',
-                                'additional_routes': [r for r in route_parts if r != route_name]
-                            }
-                        })
-                        records_created['fixed_assignments'] += 1
+            # Insert fixed assignment (NO details column)
+            await db_service.create_fixed_assignment({
+                'driver_id': driver_id,
+                'route_id': route_id,
+                'date': assignment_date
+            })
+            records_created['fixed_assignments'] += 1
         
         print(f"✅ Created {records_created['fixed_assignments']} fixed assignments")
         
-        # 5. Apply Manual Unavailability (from user input)
+        # 5. Process driver availability (frei, manual)
+        print("📝 Processing driver availability...")
+        
+        # First, create a set of (driver_id, date) tuples for unavailable drivers
+        unavailable_set = set()
+        
+        # From parsed data (frei assignments)
+        for availability in parsed_data['driver_availability']:
+            driver_name = availability['driver_name']
+            
+            if driver_name not in driver_id_map:
+                continue
+            
+            driver_id = driver_id_map[driver_name]
+            
+            await db_service.create_availability({
+                'driver_id': driver_id,
+                'date': availability['date'],
+                'available': availability['available'],
+                'notes': availability['notes']
+            })
+            records_created['driver_availability'] += 1
+            unavailable_set.add((driver_id, availability['date']))
+        
+        # Manual unavailability (from user input)
         if unavailable_list:
-            print("📝 Processing manual unavailability...")
             for unavailable in unavailable_list:
                 driver_name = unavailable.get('driver_name')
                 dates = unavailable.get('dates', [])
                 reason = unavailable.get('reason', 'Manually set unavailable')
                 
                 if driver_name not in driver_id_map:
+                    print(f"   ⚠️ Driver '{driver_name}' not found - skipping")
                     continue
                 
                 driver_id = driver_id_map[driver_name]
@@ -247,8 +249,30 @@ async def upload_weekly_plan(
                             'notes': reason
                         })
                         records_created['driver_availability'] += 1
+                        unavailable_set.add((driver_id, unavail_date))
                     except ValueError:
+                        print(f"   ⚠️ Invalid date format: {date_str}")
                         continue
+        
+        # Now create availability records for ALL drivers for ALL days in the week
+        # Mark as available by default, unless already marked unavailable above
+        print("📅 Creating default availability records for all drivers...")
+        for driver_name, driver_id in driver_id_map.items():
+            for day_offset in range(7):
+                current_date = week_start_date + timedelta(days=day_offset)
+                
+                # Skip if already marked unavailable (holiday, frei, or manual)
+                if (driver_id, current_date) in unavailable_set:
+                    continue
+                
+                # Create available record
+                await db_service.create_availability({
+                    'driver_id': driver_id,
+                    'date': current_date,
+                    'available': True,
+                    'notes': 'Available'
+                })
+                records_created['driver_availability'] += 1
         
         print(f"✅ Created {records_created['driver_availability']} availability records")
         
@@ -308,13 +332,3 @@ def _determine_season_and_school(week_start: date, school_days: dict) -> tuple:
             break
     
     return season, school_status
-
-
-def _get_duty_name(code: str) -> str:
-    """Get duty name from code"""
-    mapping = {
-        'MB': 'Mobilbüro',
-        'DI': 'Dispo',
-        'SOF': 'Sonderfahrt'
-    }
-    return mapping.get(code, code)
