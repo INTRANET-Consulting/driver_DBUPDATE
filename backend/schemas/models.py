@@ -86,6 +86,22 @@ class Route(BaseModel):
         from_attributes = True
 
 
+class RouteCreateRequest(BaseModel):
+    """Payload for creating a route"""
+    route_name: str
+    date: date
+    day_of_week: Optional[str] = None
+    details: Optional[RouteDetails] = None
+
+
+class RouteUpdateRequest(BaseModel):
+    """Payload for updating route metadata"""
+    route_name: Optional[str] = None
+    date: Optional[date] = None
+    day_of_week: Optional[str] = None
+    details: Optional[RouteDetails] = None
+
+
 # ============= AVAILABILITY MODELS =============
 
 class DriverAvailability(BaseModel):
@@ -101,6 +117,24 @@ class DriverAvailability(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class AvailabilityCreateRequest(BaseModel):
+    """Payload for creating availability entries"""
+    driver_id: int
+    date: date
+    available: bool = True
+    shift_preference: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class AvailabilityUpdateRequest(BaseModel):
+    """Payload for updating availability rows"""
+    driver_id: Optional[int] = None
+    date: Optional[date] = None
+    available: Optional[bool] = None
+    shift_preference: Optional[str] = None
+    notes: Optional[str] = None
 
 
 # ============= FIXED ASSIGNMENT MODELS =============
@@ -126,6 +160,13 @@ class FixedAssignment(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FixedAssignmentCreateRequest(BaseModel):
+    """Payload for creating a fixed assignment"""
+    driver_id: int
+    route_id: Optional[int] = None
+    date: date
 
 
 # ============= SEASON CONFIG MODELS =============
@@ -196,3 +237,15 @@ class UploadHistory(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class DriverCreateRequest(BaseModel):
+    """Payload for creating a driver from the UI"""
+    name: str
+    details: Optional[DriverDetails] = None
+
+
+class DriverUpdateRequest(BaseModel):
+    """Payload for updating driver properties"""
+    name: Optional[str] = None
+    details: Optional[DriverDetails] = None

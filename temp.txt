@@ -99,19 +99,9 @@ class GoogleSheetsService:
             
             # Upload Excel and replace content
             print(f"📤 Uploading Excel file...")
-            from pathlib import Path
-            ext = Path(excel_file_path).suffix.lower()
-            if ext == '.xlsm':
-                mimetype = 'application/vnd.ms-excel.sheet.macroEnabled.12'
-            elif ext == '.xls':
-                mimetype = 'application/vnd.ms-excel'
-            else:
-                mimetype = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            print(f"dY\"v Using MIME type '{mimetype}' for upload")
-            
             media = MediaFileUpload(
                 excel_file_path,
-                mimetype=mimetype,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 resumable=True
             )
             

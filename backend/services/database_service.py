@@ -1,11 +1,15 @@
 import asyncpg
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import date, datetime
 from schemas.models import (
     Driver, Route, DriverAvailability, FixedAssignment,
     SeasonConfig, SchoolVacationPeriod, UploadHistory
 )
 import json
+import time
+
+AVAILABILITY_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+AVAILABILITY_CACHE_TTL = 5.0  # seconds
 
 
 class DatabaseService:
@@ -122,6 +126,26 @@ class DatabaseService:
         
         row = await self.conn.fetchrow(query, name)
         return dict(row) if row else None
+
+    async def get_driver_by_id(self, driver_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a driver row by ID"""
+        query = """
+            SELECT driver_id, name, details, created_at, updated_at
+            FROM drivers
+            WHERE driver_id = $1
+        """
+        row = await self.conn.fetchrow(query, driver_id)
+        if not row:
+            return None
+        row_dict = dict(row)
+        details = row_dict.get('details') or {}
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except json.JSONDecodeError:
+                details = {}
+        row_dict['details'] = details
+        return row_dict
     
     async def get_all_drivers(self) -> List[Dict]:
         """Get all drivers"""
@@ -150,6 +174,40 @@ class DatabaseService:
             result.append(row_dict)
         
         return result
+
+    async def update_driver(self, driver_id: int, update_data: Dict[str, Any]) -> Optional[Dict]:
+        """Update driver properties"""
+        existing = await self.get_driver_by_id(driver_id)
+        if not existing:
+            return None
+        new_name = update_data.get('name', existing['name'])
+        new_details = existing.get('details', {})
+        if update_data.get('details'):
+            new_details.update(update_data['details'])
+        row = await self.conn.fetchrow(
+            """
+            UPDATE drivers
+            SET name = $1,
+                details = $2,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE driver_id = $3
+            RETURNING driver_id, name, details, created_at, updated_at
+            """,
+            new_name,
+            json.dumps(new_details),
+            driver_id
+        )
+        if not row:
+            return None
+        updated = dict(row)
+        details = updated.get('details') or {}
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except json.JSONDecodeError:
+                details = {}
+        updated['details'] = details
+        return updated
     
     # ============= ROUTE OPERATIONS =============
     
@@ -254,25 +312,28 @@ class DatabaseService:
             query = """
                 UPDATE driver_availability
                 SET available = $1,
+                    shift_preference = COALESCE($2, shift_preference),
                     notes = CASE 
-                        WHEN notes IS NULL THEN $2
-                        ELSE notes || '; ' || $2
+                        WHEN $3 IS NULL THEN notes
+                        WHEN notes IS NULL THEN $3
+                        ELSE notes || '; ' || $3
                     END,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = $3
+                WHERE id = $4
                 RETURNING id
             """
             avail_id = await self.conn.fetchval(
                 query,
                 availability_data['available'],
+                availability_data.get('shift_preference'),
                 availability_data.get('notes'),
                 existing
             )
         else:
             # Insert new
             query = """
-                INSERT INTO driver_availability (driver_id, date, available, notes)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO driver_availability (driver_id, date, available, shift_preference, notes)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING id
             """
             avail_id = await self.conn.fetchval(
@@ -280,6 +341,7 @@ class DatabaseService:
                 availability_data['driver_id'],
                 availability_data['date'],
                 availability_data['available'],
+                availability_data.get('shift_preference'),
                 availability_data.get('notes')
             )
         
@@ -287,10 +349,14 @@ class DatabaseService:
     
     async def get_availability_for_week(self, week_start: date) -> List[Dict]:
         """Get all availability records for a week - OPTIMIZED VERSION"""
-        import time
         from datetime import timedelta
 
         week_end = week_start + timedelta(days=7)
+        cache_key = str(week_start)
+        cached_entry = AVAILABILITY_CACHE.get(cache_key)
+        if cached_entry and (time.time() - cached_entry[0]) < AVAILABILITY_CACHE_TTL:
+            print(f"♻️  [AVAILABILITY] Returning cached data for week {week_start}")
+            return cached_entry[1]
 
         print(f"\n{'='*60}")
         print(f"🔍 [DB SERVICE] get_availability_for_week")
@@ -311,6 +377,7 @@ class DatabaseService:
 
             if count == 0:
                 print(f"⚠️  No availability records found for this week!")
+                AVAILABILITY_CACHE[cache_key] = (time.time(), [])
                 return []
 
             if count > 5000:
@@ -352,7 +419,9 @@ class DatabaseService:
                 print(f"⚠️  Query was slow ({elapsed:.1f}s)")
 
             print(f"{'='*60}\n")
-            return [dict(row) for row in rows]
+            result = [dict(row) for row in rows]
+            AVAILABILITY_CACHE[cache_key] = (time.time(), result)
+            return result
 
         except Exception as e:
             elapsed = time.time() - start if 'start' in locals() else 0
@@ -402,13 +471,53 @@ class DatabaseService:
                 print(f"   Total time: {total_fallback_time:.3f}s")
                 print(f"   Returned: {len(result)} records")
                 print(f"{'='*60}\n")
-
+                AVAILABILITY_CACHE[cache_key] = (time.time(), result)
                 return result
-
             except Exception as fallback_error:
-                print(f"❌ FALLBACK also FAILED: {str(fallback_error)}")
+                print(f"⚠️ FALLBACK also FAILED: {str(fallback_error)}")
                 print(f"{'='*60}\n")
                 raise
+
+        return []
+
+    async def get_availability_by_id(self, availability_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a single availability record"""
+        row = await self.conn.fetchrow(
+            """
+            SELECT id, driver_id, date, available, shift_preference, notes, created_at, updated_at
+            FROM driver_availability
+            WHERE id = $1
+            """,
+            availability_id
+        )
+        return dict(row) if row else None
+
+    async def update_availability_record(self, availability_id: int, update_data: Dict[str, Any]) -> Optional[Dict]:
+        """Update availability row with direct field control"""
+        existing = await self.get_availability_by_id(availability_id)
+        if not existing:
+            return None
+        row = await self.conn.fetchrow(
+            """
+            UPDATE driver_availability
+            SET driver_id = $1,
+                date = $2,
+                available = $3,
+                shift_preference = $4,
+                notes = $5,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $6
+            RETURNING id, driver_id, date, available, shift_preference, notes, created_at, updated_at
+            """,
+            update_data.get('driver_id', existing['driver_id']),
+            update_data.get('date', existing['date']),
+            update_data.get('available', existing['available']),
+            update_data.get('shift_preference', existing.get('shift_preference')),
+            update_data.get('notes', existing.get('notes')),
+            availability_id
+        )
+        return dict(row) if row else None
+
     
     async def delete_availability_for_week(self, week_start: date):
         """Delete availability records for a week"""
@@ -470,6 +579,23 @@ class DatabaseService:
         
         rows = await self.conn.fetch(query, week_start)
         return [dict(row) for row in rows]
+
+    async def get_fixed_assignment_by_id(self, assignment_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single fixed assignment"""
+        row = await self.conn.fetchrow(
+            """
+            SELECT fa.id, fa.driver_id, fa.route_id, fa.date,
+                   fa.created_at, fa.updated_at,
+                   d.name as driver_name,
+                   r.route_name
+            FROM fixed_assignments fa
+            JOIN drivers d ON fa.driver_id = d.driver_id
+            LEFT JOIN routes r ON fa.route_id = r.route_id
+            WHERE fa.id = $1
+            """,
+            assignment_id
+        )
+        return dict(row) if row else None
     
     async def delete_fixed_assignments_for_week(self, week_start: date):
         """Delete fixed assignments for a week"""
@@ -479,6 +605,14 @@ class DatabaseService:
         """
         
         await self.conn.execute(query, week_start)
+    
+    async def delete_fixed_assignment(self, assignment_id: int) -> bool:
+        """Delete a single fixed assignment"""
+        result = await self.conn.execute(
+            "DELETE FROM fixed_assignments WHERE id = $1",
+            assignment_id
+        )
+        return result and result.endswith("1")
     
     # ============= HELPER METHODS =============
     
@@ -492,3 +626,78 @@ class DatabaseService:
         
         row = await self.conn.fetchrow(query, route_name, route_date)
         return dict(row) if row else None
+
+    async def get_route_by_id(self, route_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch route by ID"""
+        query = """
+            SELECT route_id, date, route_name, details, day_of_week, created_at
+            FROM routes
+            WHERE route_id = $1
+        """
+        row = await self.conn.fetchrow(query, route_id)
+        if not row:
+            return None
+        row_dict = dict(row)
+        details = row_dict.get('details') or {}
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except json.JSONDecodeError:
+                details = {}
+        row_dict['details'] = details
+        return row_dict
+
+    async def update_route(self, route_id: int, update_data: Dict[str, Any]) -> Optional[Dict]:
+        """Update route metadata"""
+        existing = await self.get_route_by_id(route_id)
+        if not existing:
+            return None
+        new_route_name = update_data.get('route_name', existing['route_name'])
+        new_date = update_data.get('date', existing['date'])
+        new_day = update_data.get('day_of_week', existing.get('day_of_week'))
+        new_details = existing.get('details', {})
+        if update_data.get('details'):
+            new_details.update(update_data['details'])
+        row = await self.conn.fetchrow(
+            """
+            UPDATE routes
+            SET route_name = $1,
+                date = $2,
+                day_of_week = $3,
+                details = $4
+            WHERE route_id = $5
+            RETURNING route_id, date, route_name, details, day_of_week, created_at
+            """,
+            new_route_name,
+            new_date,
+            new_day,
+            json.dumps(new_details),
+            route_id
+        )
+        if not row:
+            return None
+        updated = dict(row)
+        details = updated.get('details') or {}
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except json.JSONDecodeError:
+                details = {}
+        updated['details'] = details
+        return updated
+
+    async def delete_route(self, route_id: int) -> bool:
+        """Delete a route by ID"""
+        result = await self.conn.execute(
+            "DELETE FROM routes WHERE route_id = $1",
+            route_id
+        )
+        return result.endswith("1")
+
+    async def delete_driver(self, driver_id: int) -> bool:
+        """Delete a driver by ID"""
+        result = await self.conn.execute(
+            "DELETE FROM drivers WHERE driver_id = $1",
+            driver_id
+        )
+        return result.endswith("1")

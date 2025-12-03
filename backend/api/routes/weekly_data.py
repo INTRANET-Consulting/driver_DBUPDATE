@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from datetime import date, timedelta
 import asyncpg
 from typing import List
@@ -9,7 +9,11 @@ from database.connection import get_db
 from services.database_service import DatabaseService
 from schemas.models import (
     WeeklyRoutesResponse, WeeklyDriversResponse, WeeklyAvailabilityResponse,
-    Route, Driver, DriverAvailability
+    Route, Driver, DriverAvailability, FixedAssignment,
+    DriverCreateRequest, DriverUpdateRequest,
+    RouteCreateRequest, RouteUpdateRequest,
+    AvailabilityCreateRequest, AvailabilityUpdateRequest,
+    FixedAssignmentCreateRequest
 )
 
 router = APIRouter(prefix="/api/v1/weekly", tags=["weekly_data"])
@@ -71,6 +75,71 @@ async def get_weekly_routes(
     )
 
 
+@router.patch("/routes/{route_id}", response_model=Route)
+async def update_route(
+    route_id: int,
+    payload: RouteUpdateRequest,
+    conn: asyncpg.Connection = Depends(get_db)
+):
+    """Update a route's metadata"""
+    update_payload = {}
+    if payload.route_name:
+        update_payload["route_name"] = payload.route_name
+    if payload.date:
+        update_payload["date"] = payload.date
+    if payload.day_of_week:
+        update_payload["day_of_week"] = payload.day_of_week
+    if payload.details:
+        details_payload = payload.details.dict(exclude_unset=True)
+        if details_payload:
+            update_payload["details"] = details_payload
+    if not update_payload:
+        raise HTTPException(status_code=400, detail="No update fields supplied")
+    db_service = DatabaseService(conn)
+    try:
+        updated = await db_service.update_route(route_id, update_payload)
+    except asyncpg.exceptions.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail="Route with the same date/name already exists"
+        )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Route not found")
+    return Route(**updated)
+
+
+@router.post("/routes", response_model=Route, status_code=status.HTTP_201_CREATED)
+async def create_route(
+    payload: RouteCreateRequest,
+    conn: asyncpg.Connection = Depends(get_db)
+):
+    """Create a new route entry"""
+    db_service = DatabaseService(conn)
+    details_payload = payload.details.dict(exclude_unset=True) if payload.details else {}
+    route_id = await db_service.create_route({
+        "date": payload.date,
+        "route_name": payload.route_name,
+        "day_of_week": payload.day_of_week,
+        "details": details_payload
+    })
+    route = await db_service.get_route_by_id(route_id)
+    if not route:
+        raise HTTPException(status_code=500, detail="Failed to persist route")
+    return Route(**route)
+
+
+@router.delete("/routes/{route_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_route(
+    route_id: int,
+    conn: asyncpg.Connection = Depends(get_db)
+):
+    """Delete a route"""
+    db_service = DatabaseService(conn)
+    deleted = await db_service.delete_route(route_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+
 @router.get("/drivers", response_model=WeeklyDriversResponse)
 async def get_weekly_drivers(
     week_start: date = Query(..., description="Week start date"),
@@ -105,6 +174,58 @@ async def get_weekly_drivers(
         week_start=week_start,
         drivers=drivers
     )
+
+
+@router.post("/drivers", response_model=Driver, status_code=status.HTTP_201_CREATED)
+async def create_driver(
+    payload: DriverCreateRequest,
+    conn: asyncpg.Connection = Depends(get_db)
+):
+    """Create a driver from the UI"""
+    db_service = DatabaseService(conn)
+    driver_id = await db_service.upsert_driver({
+        "name": payload.name,
+        "details": payload.details.dict(exclude_unset=True) if payload.details else {}
+    })
+    driver = await db_service.get_driver_by_id(driver_id)
+    if not driver:
+        raise HTTPException(status_code=500, detail="Failed to persist driver")
+    return Driver(**driver)
+
+
+@router.patch("/drivers/{driver_id}", response_model=Driver)
+async def update_driver(
+    driver_id: int,
+    payload: DriverUpdateRequest,
+    conn: asyncpg.Connection = Depends(get_db)
+):
+    """Update driver metadata"""
+    db_service = DatabaseService(conn)
+    update_payload = {}
+    if payload.name:
+        update_payload["name"] = payload.name
+    if payload.details:
+        details_payload = payload.details.dict(exclude_unset=True)
+        if details_payload:
+            update_payload["details"] = details_payload
+    if not update_payload:
+        raise HTTPException(status_code=400, detail="No update fields supplied")
+    updated = await db_service.update_driver(driver_id, update_payload)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    return Driver(**updated)
+
+
+@router.delete("/drivers/{driver_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_driver(
+    driver_id: int,
+    conn: asyncpg.Connection = Depends(get_db)
+):
+    """Delete a driver"""
+    db_service = DatabaseService(conn)
+    deleted = await db_service.delete_driver(driver_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Driver not found")
 
 
 @router.get("/availability", response_model=WeeklyAvailabilityResponse)
@@ -181,6 +302,49 @@ async def get_weekly_availability(
         )
 
 
+@router.post("/availability", response_model=DriverAvailability, status_code=status.HTTP_201_CREATED)
+async def create_availability_record(
+    payload: AvailabilityCreateRequest,
+    conn: asyncpg.Connection = Depends(get_db)
+):
+    """Create availability row manually"""
+    db_service = DatabaseService(conn)
+    try:
+        avail_id = await db_service.create_availability(payload.dict())
+    except asyncpg.exceptions.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail="Availability already exists for that driver and date"
+        )
+    record = await db_service.get_availability_by_id(avail_id)
+    if not record:
+        raise HTTPException(status_code=500, detail="Failed to persist availability")
+    return DriverAvailability(**record)
+
+
+@router.patch("/availability/{availability_id}", response_model=DriverAvailability)
+async def update_availability_record(
+    availability_id: int,
+    payload: AvailabilityUpdateRequest,
+    conn: asyncpg.Connection = Depends(get_db)
+):
+    """Update manual availability rows"""
+    fields = payload.dict(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No update fields supplied")
+    db_service = DatabaseService(conn)
+    try:
+        updated = await db_service.update_availability_record(availability_id, fields)
+    except asyncpg.exceptions.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail="Availability already exists for that driver and date"
+        )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Availability row not found")
+    return DriverAvailability(**updated)
+
+
 @router.get("/fixed-assignments")
 async def get_weekly_fixed_assignments(
     week_start: date = Query(..., description="Week start date"),
@@ -201,6 +365,38 @@ async def get_weekly_fixed_assignments(
         "week_start": week_start,
         "fixed_assignments": assignments
     }
+
+
+@router.post("/fixed-assignments", response_model=FixedAssignment, status_code=status.HTTP_201_CREATED)
+async def create_fixed_assignment(
+    payload: FixedAssignmentCreateRequest,
+    conn: asyncpg.Connection = Depends(get_db)
+):
+    """Create a fixed assignment"""
+    db_service = DatabaseService(conn)
+    try:
+        assignment_id = await db_service.create_fixed_assignment(payload.dict())
+    except asyncpg.exceptions.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail="Assignment already exists for that driver/date/route"
+        )
+    assignment = await db_service.get_fixed_assignment_by_id(assignment_id)
+    if not assignment:
+        raise HTTPException(status_code=500, detail="Failed to persist assignment")
+    return assignment
+
+
+@router.delete("/fixed-assignments/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_fixed_assignment(
+    assignment_id: int,
+    conn: asyncpg.Connection = Depends(get_db)
+):
+    """Delete a fixed assignment"""
+    db_service = DatabaseService(conn)
+    deleted = await db_service.delete_fixed_assignment(assignment_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Fixed assignment not found")
 
 
 @router.get("/summary")

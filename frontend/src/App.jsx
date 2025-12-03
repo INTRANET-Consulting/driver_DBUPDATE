@@ -20,6 +20,43 @@ const DriverSchedulingSystem = () => {
   const [editingDriver, setEditingDriver] = useState(null);
   const [editingRoute, setEditingRoute] = useState(null);
   const [editingAvailability, setEditingAvailability] = useState(null);
+  const [driverDraft, setDriverDraft] = useState(null);
+  const [routeDraft, setRouteDraft] = useState(null);
+  const [availabilityDraft, setAvailabilityDraft] = useState(null);
+  const [newDriver, setNewDriver] = useState({
+    name: '',
+    type: '',
+    employment_percentage: '',
+    monthly_hours_target: '',
+    monthly_hours_worked: '',
+    monthly_hours_remaining: '',
+    fixed_route_with_school: '',
+    fixed_route_without_school: ''
+  });
+  const [newAvailability, setNewAvailability] = useState({
+    driver_id: '',
+    date: '',
+    available: true,
+    shift_preference: '',
+    notes: ''
+  });
+  const [newAssignment, setNewAssignment] = useState({
+    driver_id: '',
+    route_id: '',
+    date: ''
+  });
+  const [newRoute, setNewRoute] = useState({
+    route_name: '',
+    date: '',
+    day_of_week: '',
+    type: '',
+    duration_hours: '',
+    diaten: '',
+    vad_time: '',
+    location: '',
+    duty_code: '',
+    duty_name: ''
+  });
 
   const validateMonday = (dateString) => {
     if (!dateString) return false;
@@ -147,31 +184,414 @@ const DriverSchedulingSystem = () => {
     }
   };
 
-  const updateDriver = async (driverId, updatedDetails) => {
+  const toNullIfEmpty = (value) => {
+    if (value === '' || value === undefined) return null;
+    return value;
+  };
+
+  const cleanObject = (obj) => Object.fromEntries(
+    Object.entries(obj).filter(([, value]) => value !== null && value !== '' && value !== undefined)
+  );
+
+  const handleDriverEdit = (driver) => {
+    setEditingDriver(driver.driver_id);
+    setDriverDraft({
+      name: driver.name,
+      type: driver.details.type || '',
+      employment_percentage: driver.details.employment_percentage !== undefined && driver.details.employment_percentage !== null
+        ? String(driver.details.employment_percentage)
+        : '',
+      monthly_hours_target: driver.details.monthly_hours_target || '',
+      monthly_hours_worked: driver.details.monthly_hours_worked || '',
+      monthly_hours_remaining: driver.details.monthly_hours_remaining || '',
+      fixed_route_with_school: driver.details.fixed_route_with_school || '',
+      fixed_route_without_school: driver.details.fixed_route_without_school || ''
+    });
+  };
+
+  const cancelDriverEdit = () => {
+    setEditingDriver(null);
+    setDriverDraft(null);
+  };
+
+  const saveDriverEdits = async () => {
+    if (!editingDriver || !driverDraft) return;
+    if (!driverDraft.name.trim()) {
+      setMessage({ type: 'error', text: 'Driver name is required' });
+      return;
+    }
+    const employmentValue = driverDraft.employment_percentage === '' || driverDraft.employment_percentage === null
+      ? null
+      : parseInt(driverDraft.employment_percentage, 10);
+    const detailsPayload = cleanObject({
+      type: driverDraft.type || null,
+      employment_percentage: Number.isNaN(employmentValue) ? null : employmentValue,
+      monthly_hours_target: driverDraft.monthly_hours_target || null,
+      monthly_hours_worked: driverDraft.monthly_hours_worked || null,
+      monthly_hours_remaining: driverDraft.monthly_hours_remaining || null,
+      fixed_route_with_school: driverDraft.fixed_route_with_school || null,
+      fixed_route_without_school: driverDraft.fixed_route_without_school || null
+    });
+    const payload = { name: driverDraft.name.trim() };
+    if (Object.keys(detailsPayload).length > 0) {
+      payload.details = detailsPayload;
+    }
     try {
-      setDrivers(drivers.map(d => 
-        d.driver_id === driverId 
-          ? { ...d, details: { ...d.details, ...updatedDetails } }
-          : d
-      ));
-      setEditingDriver(null);
+      const response = await fetch(`${API_BASE_URL}/weekly/drivers/${editingDriver}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to update driver');
+      }
+      const data = await response.json();
+      setDrivers(drivers.map(d => d.driver_id === data.driver_id ? data : d));
+      cancelDriverEdit();
       setMessage({ type: 'success', text: 'Driver updated successfully' });
     } catch (error) {
-      setMessage({ type: 'error', text: 'Failed to update driver' });
+      setMessage({ type: 'error', text: error.message });
     }
   };
 
-  const updateAvailability = async (availId, updatedData) => {
+  const handleDriverCreate = async () => {
+    if (!newDriver.name.trim()) {
+      setMessage({ type: 'error', text: 'Driver name is required' });
+      return;
+    }
+    const newEmployment = newDriver.employment_percentage === '' ? null : parseInt(newDriver.employment_percentage, 10);
+    const detailsPayload = cleanObject({
+      type: newDriver.type || null,
+      employment_percentage: Number.isNaN(newEmployment) ? null : newEmployment,
+      monthly_hours_target: newDriver.monthly_hours_target || null,
+      monthly_hours_worked: newDriver.monthly_hours_worked || null,
+      monthly_hours_remaining: newDriver.monthly_hours_remaining || null,
+      fixed_route_with_school: newDriver.fixed_route_with_school || null,
+      fixed_route_without_school: newDriver.fixed_route_without_school || null
+    });
+    const payload = { name: newDriver.name.trim() };
+    if (Object.keys(detailsPayload).length > 0) {
+      payload.details = detailsPayload;
+    }
     try {
+      const response = await fetch(`${API_BASE_URL}/weekly/drivers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to create driver');
+      }
+      const data = await response.json();
+      setDrivers([...drivers, data]);
+      setNewDriver({
+        name: '',
+        type: '',
+        employment_percentage: '',
+        monthly_hours_target: '',
+        monthly_hours_worked: '',
+        monthly_hours_remaining: '',
+        fixed_route_with_school: '',
+        fixed_route_without_school: ''
+      });
+      setMessage({ type: 'success', text: 'Driver created successfully' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    }
+  };
+
+  const handleDeleteDriver = async (driverId) => {
+    const driver = drivers.find(d => d.driver_id === driverId);
+    if (driver && !window.confirm(`Delete driver "${driver.name}"? This cannot be undone.`)) {
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/weekly/drivers/${driverId}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to delete driver');
+      }
+      setDrivers(drivers.filter(d => d.driver_id !== driverId));
+      setAvailability(availability.filter(a => a.driver_id !== driverId));
+      setFixedAssignments(fixedAssignments.filter(a => a.driver_id !== driverId));
+      setMessage({ type: 'success', text: 'Driver deleted successfully' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    }
+  };
+
+  const handleRouteEdit = (route) => {
+    setEditingRoute(route.route_id);
+    setRouteDraft({
+      route_name: route.route_name,
+      day_of_week: route.day_of_week || '',
+      duration_hours: route.details.duration_hours ?? '',
+      diaten: route.details.diaten ?? '',
+      vad_time: route.details.vad_time || '',
+      location: route.details.location || '',
+      duty_code: route.details.duty_code || '',
+      duty_name: route.details.duty_name || ''
+    });
+  };
+
+  const cancelRouteEdit = () => {
+    setEditingRoute(null);
+    setRouteDraft(null);
+  };
+
+  const saveRouteEdits = async () => {
+    if (!editingRoute || !routeDraft) return;
+    if (!routeDraft.route_name || !routeDraft.route_name.trim()) {
+      setMessage({ type: 'error', text: 'Route name is required' });
+      return;
+    }
+    const durationValue = routeDraft.duration_hours === '' ? null : parseFloat(routeDraft.duration_hours);
+    const diatenValue = routeDraft.diaten === '' ? null : parseFloat(routeDraft.diaten);
+    const detailsPayload = cleanObject({
+      duration_hours: Number.isNaN(durationValue) ? null : durationValue,
+      diaten: Number.isNaN(diatenValue) ? null : diatenValue,
+      vad_time: routeDraft.vad_time || null,
+      location: routeDraft.location || null,
+      duty_code: routeDraft.duty_code || null,
+      duty_name: routeDraft.duty_name || null
+    });
+    const payload = cleanObject({
+      route_name: routeDraft.route_name.trim(),
+      day_of_week: routeDraft.day_of_week || null
+    });
+    if (Object.keys(detailsPayload).length > 0) {
+      payload.details = detailsPayload;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/weekly/routes/${editingRoute}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to update route');
+      }
+      const data = await response.json();
+      setRoutes(routes.map(r => r.route_id === data.route_id ? data : r));
+      cancelRouteEdit();
+      setMessage({ type: 'success', text: 'Route updated successfully' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    }
+  };
+
+  const handleCreateRoute = async () => {
+    if (!newRoute.route_name.trim() || !newRoute.date) {
+      setMessage({ type: 'error', text: 'Route name and date are required' });
+      return;
+    }
+    const durationValue = newRoute.duration_hours === '' ? null : parseFloat(newRoute.duration_hours);
+    const diatenValue = newRoute.diaten === '' ? null : parseFloat(newRoute.diaten);
+    const detailsPayload = cleanObject({
+      type: newRoute.type || null,
+      duration_hours: Number.isNaN(durationValue) ? null : durationValue,
+      diaten: Number.isNaN(diatenValue) ? null : diatenValue,
+      vad_time: newRoute.vad_time || null,
+      location: newRoute.location || null,
+      duty_code: newRoute.duty_code || null,
+      duty_name: newRoute.duty_name || null
+    });
+    const payload = cleanObject({
+      route_name: newRoute.route_name.trim(),
+      date: newRoute.date,
+      day_of_week: newRoute.day_of_week || null,
+      details: Object.keys(detailsPayload).length > 0 ? detailsPayload : undefined
+    });
+    try {
+      const response = await fetch(`${API_BASE_URL}/weekly/routes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to create route');
+      }
+      const data = await response.json();
+      setRoutes([...routes, data]);
+      setNewRoute({
+        route_name: '',
+        date: '',
+        day_of_week: '',
+        type: '',
+        duration_hours: '',
+        diaten: '',
+        vad_time: '',
+        location: '',
+        duty_code: '',
+        duty_name: ''
+      });
+      setMessage({ type: 'success', text: 'Route created successfully' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    }
+  };
+
+  const handleDeleteRoute = async (routeId) => {
+    const route = routes.find(r => r.route_id === routeId);
+    if (route && !window.confirm(`Delete route "${route.route_name}" on ${route.date}?`)) {
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/weekly/routes/${routeId}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to delete route');
+      }
+      setRoutes(routes.filter(r => r.route_id !== routeId));
+      setFixedAssignments(fixedAssignments.filter(a => a.route_id !== routeId));
+      setMessage({ type: 'success', text: 'Route deleted successfully' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    }
+  };
+
+  const handleAvailabilityEdit = (record) => {
+    setEditingAvailability(record.id);
+    setAvailabilityDraft({
+      driver_id: record.driver_id,
+      date: record.date,
+      available: record.available,
+      shift_preference: record.shift_preference || '',
+      notes: record.notes || ''
+    });
+  };
+
+  const cancelAvailabilityEdit = () => {
+    setEditingAvailability(null);
+    setAvailabilityDraft(null);
+  };
+
+  const saveAvailabilityEdits = async () => {
+    if (!editingAvailability || !availabilityDraft) return;
+    const payload = cleanObject({
+      driver_id: Number(availabilityDraft.driver_id),
+      date: availabilityDraft.date,
+      available: availabilityDraft.available,
+      shift_preference: availabilityDraft.shift_preference || null,
+      notes: availabilityDraft.notes || null
+    });
+    try {
+      const response = await fetch(`${API_BASE_URL}/weekly/availability/${editingAvailability}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to update availability');
+      }
+      const data = await response.json();
+      const driverName = drivers.find(d => d.driver_id === data.driver_id)?.name || 'Unknown driver';
       setAvailability(availability.map(a => 
-        a.id === availId 
-          ? { ...a, ...updatedData }
-          : a
+        a.id === data.id ? { ...data, driver_name: driverName } : a
       ));
-      setEditingAvailability(null);
+      cancelAvailabilityEdit();
       setMessage({ type: 'success', text: 'Availability updated successfully' });
     } catch (error) {
-      setMessage({ type: 'error', text: 'Failed to update availability' });
+      setMessage({ type: 'error', text: error.message });
+    }
+  };
+
+  const handleCreateAvailability = async () => {
+    if (!newAvailability.driver_id || !newAvailability.date) {
+      setMessage({ type: 'error', text: 'Driver and date are required' });
+      return;
+    }
+    const payload = {
+      driver_id: Number(newAvailability.driver_id),
+      date: newAvailability.date,
+      available: newAvailability.available,
+      shift_preference: toNullIfEmpty(newAvailability.shift_preference),
+      notes: toNullIfEmpty(newAvailability.notes)
+    };
+    try {
+      const response = await fetch(`${API_BASE_URL}/weekly/availability`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to create availability');
+      }
+      const data = await response.json();
+      const driverName = drivers.find(d => d.driver_id === data.driver_id)?.name || 'Unknown driver';
+      setAvailability([...availability, { ...data, driver_name: driverName }]);
+      setNewAvailability({
+        driver_id: '',
+        date: '',
+        available: true,
+        shift_preference: '',
+        notes: ''
+      });
+      setMessage({ type: 'success', text: 'Availability created successfully' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    }
+  };
+
+  const handleCreateAssignment = async () => {
+    if (!newAssignment.driver_id || !newAssignment.date) {
+      setMessage({ type: 'error', text: 'Driver and date are required for assignments' });
+      return;
+    }
+    const payload = {
+      driver_id: Number(newAssignment.driver_id),
+      route_id: newAssignment.route_id ? Number(newAssignment.route_id) : null,
+      date: newAssignment.date
+    };
+    try {
+      const response = await fetch(`${API_BASE_URL}/weekly/fixed-assignments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to create assignment');
+      }
+      const data = await response.json();
+      const driverName = drivers.find(d => d.driver_id === data.driver_id)?.name || 'Unknown driver';
+      const routeName = data.route_id
+        ? routes.find(r => r.route_id === data.route_id)?.route_name || 'Route'
+        : 'Unassigned';
+      setFixedAssignments([
+        ...fixedAssignments,
+        { ...data, driver_name: driverName, route_name: routeName }
+      ]);
+      setNewAssignment({ driver_id: '', route_id: '', date: '' });
+      setMessage({ type: 'success', text: 'Fixed assignment created successfully' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    }
+  };
+
+  const handleDeleteAssignment = async (assignmentId) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/weekly/fixed-assignments/${assignmentId}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to delete assignment');
+      }
+      setFixedAssignments(fixedAssignments.filter(a => a.id !== assignmentId));
+      setMessage({ type: 'success', text: 'Assignment removed' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
     }
   };
 
@@ -368,95 +788,310 @@ const DriverSchedulingSystem = () => {
     </div>
   );
 
-  const DriversTab = () => (
-    <div style={{
-      backgroundColor: 'white',
-      borderRadius: '8px',
-      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-      padding: '24px'
-    }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-        <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Users size={24} />
-          Drivers ({drivers.length})
-        </h2>
-        <button
-          onClick={() => fetchWeeklyData(weekStart)}
-          disabled={!weekStart || loading}
-          style={{
-            padding: '8px 16px',
-            backgroundColor: '#f3f4f6',
-            borderRadius: '6px',
-            border: 'none',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            opacity: !weekStart || loading ? 0.5 : 1
-          }}
-        >
-          <RefreshCw size={16} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
-          Refresh
-        </button>
-      </div>
-      
-      {drivers.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '48px 0', color: '#6b7280' }}>
-          <Users size={64} style={{ margin: '0 auto 16px', opacity: 0.5 }} />
-          <p>No drivers found. Upload a weekly plan to get started.</p>
+  const DriversTab = () => {
+    const driverTypes = [
+      { label: 'Full time', value: 'full_time' },
+      { label: 'Reduced hours', value: 'reduced_hours' },
+      { label: 'Part time', value: 'part_time' }
+    ];
+    return (
+      <div style={{
+        backgroundColor: 'white',
+        borderRadius: '8px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        padding: '24px'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+          <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Users size={24} />
+            Drivers ({drivers.length})
+          </h2>
+          <button
+            onClick={() => fetchWeeklyData(weekStart)}
+            disabled={!weekStart || loading}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#f3f4f6',
+              borderRadius: '6px',
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              opacity: !weekStart || loading ? 0.5 : 1
+            }}
+          >
+            <RefreshCw size={16} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
+            Refresh
+          </button>
         </div>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ backgroundColor: '#f9fafb' }}>
-                <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Name</th>
-                <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Type</th>
-                <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Employment %</th>
-                <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Target Hours</th>
-                <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Worked</th>
-                <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Remaining</th>
-                <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Fixed (mS)</th>
-                <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Fixed (oS)</th>
-                <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {drivers.map((driver, idx) => (
-                <tr key={driver.driver_id} style={{ borderTop: '1px solid #e5e7eb', backgroundColor: idx % 2 === 0 ? 'white' : '#f9fafb' }}>
-                  <td style={{ padding: '16px', fontWeight: '500' }}>{driver.name}</td>
-                  <td style={{ padding: '16px' }}>
-                    <span style={{
-                      padding: '4px 8px',
-                      fontSize: '12px',
-                      borderRadius: '12px',
-                      backgroundColor: driver.details.type === 'full_time' ? '#d1fae5' : driver.details.type === 'reduced_hours' ? '#dbeafe' : '#f3f4f6',
-                      color: driver.details.type === 'full_time' ? '#065f46' : driver.details.type === 'reduced_hours' ? '#1e40af' : '#374151'
-                    }}>
-                      {driver.details.type?.replace('_', ' ') || 'N/A'}
-                    </span>
-                  </td>
-                  <td style={{ padding: '16px' }}>{driver.details.employment_percentage || 'N/A'}%</td>
-                  <td style={{ padding: '16px' }}>{driver.details.monthly_hours_target || 'N/A'}</td>
-                  <td style={{ padding: '16px' }}>{driver.details.monthly_hours_worked || 'N/A'}</td>
-                  <td style={{ padding: '16px', color: '#059669', fontWeight: '500' }}>
-                    {driver.details.monthly_hours_remaining || 'N/A'}
-                  </td>
-                  <td style={{ padding: '16px' }}>{driver.details.fixed_route_with_school || '-'}</td>
-                  <td style={{ padding: '16px' }}>{driver.details.fixed_route_without_school || '-'}</td>
-                  <td style={{ padding: '16px' }}>
-                    <button style={{ color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}>
-                      <Edit2 size={16} />
-                    </button>
-                  </td>
-                </tr>
+
+        <div style={{ marginBottom: '24px', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '16px' }}>
+          <h3 style={{ fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Plus size={16} />
+            Quick Add Driver
+          </h3>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+            <input
+              type="text"
+              placeholder="Name"
+              value={newDriver.name}
+              onChange={(e) => setNewDriver({ ...newDriver, name: e.target.value })}
+              style={{ flex: '1', minWidth: '180px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <select
+              value={newDriver.type}
+              onChange={(e) => setNewDriver({ ...newDriver, type: e.target.value })}
+              style={{ width: '160px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            >
+              <option value="">Type</option>
+              {driverTypes.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
               ))}
-            </tbody>
-          </table>
+            </select>
+            <input
+              type="number"
+              placeholder="Employment %"
+              value={newDriver.employment_percentage}
+              onChange={(e) => setNewDriver({ ...newDriver, employment_percentage: e.target.value })}
+              style={{ width: '140px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Target HH:MM"
+              value={newDriver.monthly_hours_target}
+              onChange={(e) => setNewDriver({ ...newDriver, monthly_hours_target: e.target.value })}
+              style={{ width: '140px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Worked HH:MM"
+              value={newDriver.monthly_hours_worked}
+              onChange={(e) => setNewDriver({ ...newDriver, monthly_hours_worked: e.target.value })}
+              style={{ width: '140px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Remaining HH:MM"
+              value={newDriver.monthly_hours_remaining}
+              onChange={(e) => setNewDriver({ ...newDriver, monthly_hours_remaining: e.target.value })}
+              style={{ width: '150px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Fixed (with school)"
+              value={newDriver.fixed_route_with_school}
+              onChange={(e) => setNewDriver({ ...newDriver, fixed_route_with_school: e.target.value })}
+              style={{ minWidth: '200px', flex: '1', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Fixed (without school)"
+              value={newDriver.fixed_route_without_school}
+              onChange={(e) => setNewDriver({ ...newDriver, fixed_route_without_school: e.target.value })}
+              style={{ minWidth: '200px', flex: '1', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <button
+              onClick={handleDriverCreate}
+              style={{
+                padding: '10px 16px',
+                backgroundColor: '#2563eb',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer'
+              }}
+            >
+              Add Driver
+            </button>
+          </div>
         </div>
-      )}
-    </div>
-  );
+        
+        {drivers.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '48px 0', color: '#6b7280' }}>
+            <Users size={64} style={{ margin: '0 auto 16px', opacity: 0.5 }} />
+            <p>No drivers found. Upload a weekly plan to get started.</p>
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ backgroundColor: '#f9fafb' }}>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Name</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Type</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Employment %</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Target Hours</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Worked</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Remaining</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Fixed (mS)</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Fixed (oS)</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', fontWeight: '500', color: '#6b7280', textTransform: 'uppercase' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {drivers.map((driver, idx) => {
+                  const isEditing = editingDriver === driver.driver_id;
+                  return (
+                    <tr key={driver.driver_id} style={{ borderTop: '1px solid #e5e7eb', backgroundColor: idx % 2 === 0 ? 'white' : '#f9fafb' }}>
+                      <td style={{ padding: '16px', fontWeight: '500' }}>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={driverDraft?.name || ''}
+                            onChange={(e) => setDriverDraft({ ...driverDraft, name: e.target.value })}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          />
+                        ) : (
+                          driver.name
+                        )}
+                      </td>
+                      <td style={{ padding: '16px' }}>
+                        {isEditing ? (
+                          <select
+                            value={driverDraft?.type || ''}
+                            onChange={(e) => setDriverDraft({ ...driverDraft, type: e.target.value })}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          >
+                            <option value="">Select type</option>
+                            {driverTypes.map(option => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span style={{
+                            padding: '4px 8px',
+                            fontSize: '12px',
+                            borderRadius: '12px',
+                            backgroundColor: driver.details.type === 'full_time' ? '#d1fae5' : driver.details.type === 'reduced_hours' ? '#dbeafe' : '#f3f4f6',
+                            color: driver.details.type === 'full_time' ? '#065f46' : driver.details.type === 'reduced_hours' ? '#1e40af' : '#374151'
+                          }}>
+                            {driver.details.type?.replace('_', ' ') || 'N/A'}
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ padding: '16px' }}>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            value={driverDraft?.employment_percentage ?? ''}
+                            onChange={(e) => setDriverDraft({ ...driverDraft, employment_percentage: e.target.value })}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          />
+                        ) : (
+                          <>
+                            {driver.details.employment_percentage || 'N/A'}%
+                          </>
+                        )}
+                      </td>
+                      <td style={{ padding: '16px' }}>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={driverDraft?.monthly_hours_target || ''}
+                            onChange={(e) => setDriverDraft({ ...driverDraft, monthly_hours_target: e.target.value })}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          />
+                        ) : (
+                          driver.details.monthly_hours_target || 'N/A'
+                        )}
+                      </td>
+                      <td style={{ padding: '16px' }}>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={driverDraft?.monthly_hours_worked || ''}
+                            onChange={(e) => setDriverDraft({ ...driverDraft, monthly_hours_worked: e.target.value })}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          />
+                        ) : (
+                          driver.details.monthly_hours_worked || 'N/A'
+                        )}
+                      </td>
+                      <td style={{ padding: '16px', color: '#059669', fontWeight: '500' }}>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={driverDraft?.monthly_hours_remaining || ''}
+                            onChange={(e) => setDriverDraft({ ...driverDraft, monthly_hours_remaining: e.target.value })}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          />
+                        ) : (
+                          driver.details.monthly_hours_remaining || 'N/A'
+                        )}
+                      </td>
+                      <td style={{ padding: '16px' }}>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={driverDraft?.fixed_route_with_school || ''}
+                            onChange={(e) => setDriverDraft({ ...driverDraft, fixed_route_with_school: e.target.value })}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          />
+                        ) : (
+                          driver.details.fixed_route_with_school || '-'
+                        )}
+                      </td>
+                      <td style={{ padding: '16px' }}>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={driverDraft?.fixed_route_without_school || ''}
+                            onChange={(e) => setDriverDraft({ ...driverDraft, fixed_route_without_school: e.target.value })}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          />
+                        ) : (
+                          driver.details.fixed_route_without_school || '-'
+                        )}
+                      </td>
+                      <td style={{ padding: '16px' }}>
+                        {isEditing ? (
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              onClick={saveDriverEdits}
+                              style={{ background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', padding: '6px 10px', cursor: 'pointer' }}
+                            >
+                              <Save size={14} />
+                            </button>
+                            <button
+                              onClick={cancelDriverEdit}
+                              style={{ background: '#f3f4f6', color: '#111827', border: 'none', borderRadius: '6px', padding: '6px 10px', cursor: 'pointer' }}
+                            >
+                              <X size={14} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteDriver(driver.driver_id)}
+                              style={{ background: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: '6px', padding: '6px 10px', cursor: 'pointer' }}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              onClick={() => handleDriverEdit(driver)}
+                              style={{ color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}
+                            >
+                              <Edit2 size={16} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteDriver(driver.driver_id)}
+                              style={{ color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer' }}
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const RoutesTab = () => {
     const groupedRoutes = routes.reduce((acc, route) => {
@@ -465,6 +1100,14 @@ const DriverSchedulingSystem = () => {
       acc[date].push(route);
       return acc;
     }, {});
+
+    const formatDate = (dateString) =>
+      new Date(dateString + 'T00:00:00').toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
 
     return (
       <div style={{ backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
@@ -492,6 +1135,92 @@ const DriverSchedulingSystem = () => {
           </button>
         </div>
         
+        <div style={{ marginBottom: '24px', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '16px' }}>
+          <h3 style={{ fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Plus size={16} />
+            Quick Add Route
+          </h3>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+            <input
+              type="text"
+              placeholder="Route name"
+              value={newRoute.route_name}
+              onChange={(e) => setNewRoute({ ...newRoute, route_name: e.target.value })}
+              style={{ flex: '1', minWidth: '200px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="date"
+              value={newRoute.date}
+              onChange={(e) => setNewRoute({ ...newRoute, date: e.target.value })}
+              style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Day of week"
+              value={newRoute.day_of_week}
+              onChange={(e) => setNewRoute({ ...newRoute, day_of_week: e.target.value })}
+              style={{ width: '150px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Type"
+              value={newRoute.type}
+              onChange={(e) => setNewRoute({ ...newRoute, type: e.target.value })}
+              style={{ width: '150px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="number"
+              step="0.1"
+              placeholder="Duration hrs"
+              value={newRoute.duration_hours}
+              onChange={(e) => setNewRoute({ ...newRoute, duration_hours: e.target.value })}
+              style={{ width: '140px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="number"
+              step="0.1"
+              placeholder="Diäten"
+              value={newRoute.diaten}
+              onChange={(e) => setNewRoute({ ...newRoute, diaten: e.target.value })}
+              style={{ width: '140px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="VAD time"
+              value={newRoute.vad_time}
+              onChange={(e) => setNewRoute({ ...newRoute, vad_time: e.target.value })}
+              style={{ width: '160px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Location"
+              value={newRoute.location}
+              onChange={(e) => setNewRoute({ ...newRoute, location: e.target.value })}
+              style={{ flex: '1', minWidth: '180px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Duty code"
+              value={newRoute.duty_code}
+              onChange={(e) => setNewRoute({ ...newRoute, duty_code: e.target.value })}
+              style={{ width: '140px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Duty name"
+              value={newRoute.duty_name}
+              onChange={(e) => setNewRoute({ ...newRoute, duty_name: e.target.value })}
+              style={{ width: '160px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <button
+              onClick={handleCreateRoute}
+              style={{ padding: '10px 16px', backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+            >
+              Add Route
+            </button>
+          </div>
+        </div>
+
         {routes.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '48px 0', color: '#6b7280' }}>
             <MapPin size={64} style={{ margin: '0 auto 16px', opacity: 0.5 }} />
@@ -503,45 +1232,486 @@ const DriverSchedulingSystem = () => {
               <div key={date} style={{ marginBottom: '24px', padding: '16px', border: '1px solid #e5e7eb', borderRadius: '8px', backgroundColor: '#f9fafb' }}>
                 <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <Calendar size={20} />
-                  {new Date(date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                  {formatDate(date)}
                   <span style={{ fontSize: '14px', color: '#6b7280', fontWeight: 'normal' }}>({dayRoutes.length} routes)</span>
                 </h3>
                 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px' }}>
-                  {dayRoutes.map((route) => (
-                    <div key={route.route_id} style={{ backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '12px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-                        <span style={{ fontWeight: '600', color: '#1e40af' }}>{route.route_name}</span>
-                        <span style={{
-                          padding: '2px 8px',
-                          fontSize: '11px',
-                          borderRadius: '4px',
-                          backgroundColor: route.details.type === 'regular' ? '#d1fae5' : route.details.type === 'saturday' ? '#e0e7ff' : '#fed7aa',
-                          color: route.details.type === 'regular' ? '#065f46' : route.details.type === 'saturday' ? '#3730a3' : '#9a3412'
-                        }}>
-                          {route.details.type}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '14px', color: '#6b7280' }}>
-                        {route.details.vad_time && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px' }}>
-                            <Clock size={14} />
-                            VAD: {route.details.vad_time}
+                  {dayRoutes.map((route) => {
+                    const isEditing = editingRoute === route.route_id;
+                    return (
+                      <div key={route.route_id} style={{ backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                          <span style={{ fontWeight: '600', color: '#1e40af' }}>{route.route_name}</span>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <span style={{
+                              padding: '2px 8px',
+                              fontSize: '11px',
+                              borderRadius: '4px',
+                              backgroundColor: route.details.type === 'regular' ? '#d1fae5' : route.details.type === 'saturday' ? '#e0e7ff' : '#fed7aa',
+                              color: route.details.type === 'regular' ? '#065f46' : route.details.type === 'saturday' ? '#3730a3' : '#9a3412'
+                            }}>
+                              {route.details.type}
+                            </span>
+                            {isEditing ? (
+                              <>
+                                <button
+                                  onClick={saveRouteEdits}
+                                  style={{ background: '#10b981', color: 'white', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer' }}
+                                >
+                                  <Save size={14} />
+                                </button>
+                                <button
+                                  onClick={cancelRouteEdit}
+                                  style={{ background: '#f3f4f6', color: '#111827', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer' }}
+                                >
+                                  <X size={14} />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteRoute(route.route_id)}
+                                  style={{ background: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer' }}
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </>
+                            ) : (
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button
+                                  onClick={() => handleRouteEdit(route)}
+                                  style={{ color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}
+                                >
+                                  <Edit2 size={16} />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteRoute(route.route_id)}
+                                  style={{ color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer' }}
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        {isEditing ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '14px' }}>
+                            <input
+                              type="text"
+                              placeholder="Route name"
+                              value={routeDraft?.route_name || ''}
+                              onChange={(e) => setRouteDraft({ ...routeDraft, route_name: e.target.value })}
+                              style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                            />
+                            <input
+                              type="text"
+                              placeholder="Day of week"
+                              value={routeDraft?.day_of_week || ''}
+                              onChange={(e) => setRouteDraft({ ...routeDraft, day_of_week: e.target.value })}
+                              style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                            />
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <input
+                                type="number"
+                                step="0.1"
+                                placeholder="Duration hrs"
+                                value={routeDraft?.duration_hours ?? ''}
+                                onChange={(e) => setRouteDraft({ ...routeDraft, duration_hours: e.target.value })}
+                                style={{ flex: 1, padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                              />
+                              <input
+                                type="number"
+                                step="0.1"
+                                placeholder="Diaeten"
+                                value={routeDraft?.diaten ?? ''}
+                                onChange={(e) => setRouteDraft({ ...routeDraft, diaten: e.target.value })}
+                                style={{ flex: 1, padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                              />
+                            </div>
+                            <input
+                              type="text"
+                              placeholder="VAD time"
+                              value={routeDraft?.vad_time || ''}
+                              onChange={(e) => setRouteDraft({ ...routeDraft, vad_time: e.target.value })}
+                              style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                            />
+                            <input
+                              type="text"
+                              placeholder="Location"
+                              value={routeDraft?.location || ''}
+                              onChange={(e) => setRouteDraft({ ...routeDraft, location: e.target.value })}
+                              style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                            />
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <input
+                                type="text"
+                                placeholder="Duty code"
+                                value={routeDraft?.duty_code || ''}
+                                onChange={(e) => setRouteDraft({ ...routeDraft, duty_code: e.target.value })}
+                                style={{ flex: 1, padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                              />
+                              <input
+                                type="text"
+                                placeholder="Duty name"
+                                value={routeDraft?.duty_name || ''}
+                                onChange={(e) => setRouteDraft({ ...routeDraft, duty_name: e.target.value })}
+                                style={{ flex: 1, padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: '14px', color: '#6b7280' }}>
+                            {route.details.vad_time && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px' }}>
+                                <Clock size={14} />
+                                VAD: {route.details.vad_time}
+                              </div>
+                            )}
+                            {route.details.diaten && <div>Diaeten: {route.details.diaten}h</div>}
+                            {route.details.duration_hours && <div>Dauer: {route.details.duration_hours}h</div>}
+                            {route.details.location && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <MapPin size={14} />
+                                {route.details.location}
+                              </div>
+                            )}
+                            {route.details.duty_code && (
+                              <div>Duty: {route.details.duty_code} {route.details.duty_name || ''}</div>
+                            )}
                           </div>
                         )}
-                        {route.details.diaten && <div>Diäten: {route.details.diaten}h</div>}
-                        {route.details.location && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <MapPin size={14} />
-                            {route.details.location}
-                          </div>
-                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const AvailabilityTab = () => {
+    const sortedAvailability = [...availability].sort((a, b) => new Date(a.date) - new Date(b.date));
+    return (
+      <div style={{ backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+          <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Clock size={24} />
+            Availability ({availability.length})
+          </h2>
+          <button
+            onClick={() => fetchWeeklyData(weekStart)}
+            disabled={!weekStart || loading}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#f3f4f6',
+              borderRadius: '6px',
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}
+          >
+            <RefreshCw size={16} />
+            Refresh
+          </button>
+        </div>
+
+        <div style={{ marginBottom: '24px', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '16px' }}>
+          <h3 style={{ fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Plus size={16} />
+            Add Manual Availability
+          </h3>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+            <select
+              value={newAvailability.driver_id}
+              onChange={(e) => setNewAvailability({ ...newAvailability, driver_id: e.target.value })}
+              style={{ minWidth: '220px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            >
+              <option value="">Select driver</option>
+              {drivers.map((driver) => (
+                <option key={driver.driver_id} value={String(driver.driver_id)}>{driver.name}</option>
+              ))}
+            </select>
+            <input
+              type="date"
+              value={newAvailability.date}
+              onChange={(e) => setNewAvailability({ ...newAvailability, date: e.target.value })}
+              style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <select
+              value={newAvailability.available ? 'true' : 'false'}
+              onChange={(e) => setNewAvailability({ ...newAvailability, available: e.target.value === 'true' })}
+              style={{ width: '160px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            >
+              <option value="true">Available</option>
+              <option value="false">Unavailable</option>
+            </select>
+            <input
+              type="text"
+              placeholder="Shift preference"
+              value={newAvailability.shift_preference}
+              onChange={(e) => setNewAvailability({ ...newAvailability, shift_preference: e.target.value })}
+              style={{ minWidth: '200px', flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <input
+              type="text"
+              placeholder="Notes"
+              value={newAvailability.notes}
+              onChange={(e) => setNewAvailability({ ...newAvailability, notes: e.target.value })}
+              style={{ minWidth: '200px', flex: 1, padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <button
+              onClick={handleCreateAvailability}
+              style={{ padding: '10px 16px', backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+            >
+              Add Entry
+            </button>
+          </div>
+        </div>
+
+        {availability.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '48px 0', color: '#6b7280' }}>
+            <Clock size={64} style={{ margin: '0 auto 16px', opacity: 0.5 }} />
+            <p>No availability entries for this week.</p>
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ backgroundColor: '#f9fafb' }}>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>Driver</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>Date</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>Status</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>Shift Pref</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>Notes</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedAvailability.map((record, idx) => {
+                  const isEditing = editingAvailability === record.id;
+                  const driverName = record.driver_name || drivers.find(d => d.driver_id === record.driver_id)?.name || 'Unknown';
+                  return (
+                    <tr key={record.id} style={{ borderTop: '1px solid #e5e7eb', backgroundColor: idx % 2 === 0 ? 'white' : '#f9fafb' }}>
+                      <td style={{ padding: '12px' }}>
+                        {isEditing ? (
+                          <select
+                            value={String(availabilityDraft?.driver_id ?? record.driver_id)}
+                            onChange={(e) => setAvailabilityDraft(prev => ({ ...(prev || { ...record }), driver_id: Number(e.target.value) }))}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          >
+                            {drivers.map(driver => (
+                              <option key={driver.driver_id} value={String(driver.driver_id)}>{driver.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          driverName
+                        )}
+                      </td>
+                      <td style={{ padding: '12px' }}>
+                        {isEditing ? (
+                          <input
+                            type="date"
+                            value={availabilityDraft?.date || record.date}
+                            onChange={(e) => setAvailabilityDraft(prev => ({ ...(prev || { ...record }), date: e.target.value }))}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          />
+                        ) : (
+                          record.date
+                        )}
+                      </td>
+                      <td style={{ padding: '12px' }}>
+                        {isEditing ? (
+                          <select
+                            value={(availabilityDraft?.available ?? record.available) ? 'true' : 'false'}
+                            onChange={(e) => setAvailabilityDraft(prev => ({ ...(prev || { ...record }), available: e.target.value === 'true' }))}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          >
+                            <option value="true">Available</option>
+                            <option value="false">Unavailable</option>
+                          </select>
+                        ) : (
+                          <span style={{
+                            padding: '4px 8px',
+                            borderRadius: '999px',
+                            backgroundColor: record.available ? '#dcfce7' : '#fee2e2',
+                            color: record.available ? '#166534' : '#991b1b',
+                            fontSize: '12px',
+                            fontWeight: '600'
+                          }}>
+                            {record.available ? 'Available' : 'Unavailable'}
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ padding: '12px' }}>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={availabilityDraft?.shift_preference || record.shift_preference || ''}
+                            onChange={(e) => setAvailabilityDraft(prev => ({ ...(prev || { ...record }), shift_preference: e.target.value }))}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          />
+                        ) : (
+                          record.shift_preference || '-'
+                        )}
+                      </td>
+                      <td style={{ padding: '12px' }}>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={availabilityDraft?.notes || record.notes || ''}
+                            onChange={(e) => setAvailabilityDraft(prev => ({ ...(prev || { ...record }), notes: e.target.value }))}
+                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                          />
+                        ) : (
+                          record.notes || '-'
+                        )}
+                      </td>
+                      <td style={{ padding: '12px' }}>
+                        {isEditing ? (
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              onClick={saveAvailabilityEdits}
+                              style={{ background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', padding: '6px 10px', cursor: 'pointer' }}
+                            >
+                              <Save size={14} />
+                            </button>
+                            <button
+                              onClick={cancelAvailabilityEdit}
+                              style={{ background: '#f3f4f6', color: '#111827', border: 'none', borderRadius: '6px', padding: '6px 10px', cursor: 'pointer' }}
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => handleAvailabilityEdit(record)}
+                            style={{ color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}
+                          >
+                            <Edit2 size={16} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const AssignmentsTab = () => {
+    const assignmentRows = fixedAssignments.map((assignment) => {
+      const driverName = assignment.driver_name || drivers.find(d => d.driver_id === assignment.driver_id)?.name || 'Unknown';
+      const routeName = assignment.route_name || (assignment.route_id ? routes.find(r => r.route_id === assignment.route_id)?.route_name : null) || 'Unassigned';
+      return { ...assignment, driverName, routeName };
+    });
+    return (
+      <div style={{ backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+          <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <CheckCircle size={24} />
+            Fixed Assignments ({assignmentRows.length})
+          </h2>
+          <button
+            onClick={() => fetchWeeklyData(weekStart)}
+            disabled={!weekStart || loading}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#f3f4f6',
+              borderRadius: '6px',
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}
+          >
+            <RefreshCw size={16} />
+            Refresh
+          </button>
+        </div>
+
+        <div style={{ marginBottom: '24px', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '16px' }}>
+          <h3 style={{ fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Plus size={16} />
+            Create Assignment
+          </h3>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+            <select
+              value={newAssignment.driver_id}
+              onChange={(e) => setNewAssignment({ ...newAssignment, driver_id: e.target.value })}
+              style={{ minWidth: '220px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            >
+              <option value="">Select driver</option>
+              {drivers.map((driver) => (
+                <option key={driver.driver_id} value={String(driver.driver_id)}>{driver.name}</option>
+              ))}
+            </select>
+            <select
+              value={newAssignment.route_id}
+              onChange={(e) => setNewAssignment({ ...newAssignment, route_id: e.target.value })}
+              style={{ minWidth: '220px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            >
+              <option value="">Optional route</option>
+              {routes.map((route) => (
+                <option key={route.route_id} value={String(route.route_id)}>{route.route_name}</option>
+              ))}
+            </select>
+            <input
+              type="date"
+              value={newAssignment.date}
+              onChange={(e) => setNewAssignment({ ...newAssignment, date: e.target.value })}
+              style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+            />
+            <button
+              onClick={handleCreateAssignment}
+              style={{ padding: '10px 16px', backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+            >
+              Assign
+            </button>
+          </div>
+        </div>
+
+        {assignmentRows.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '48px 0', color: '#6b7280' }}>
+            <CheckCircle size={64} style={{ margin: '0 auto 16px', opacity: 0.5 }} />
+            <p>No fixed assignments yet.</p>
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ backgroundColor: '#f9fafb' }}>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>Driver</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>Route</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>Date</th>
+                  <th style={{ padding: '12px', textAlign: 'left', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assignmentRows.map((assignment, idx) => (
+                  <tr key={assignment.id} style={{ borderTop: '1px solid #e5e7eb', backgroundColor: idx % 2 === 0 ? 'white' : '#f9fafb' }}>
+                    <td style={{ padding: '12px', fontWeight: '500' }}>{assignment.driverName}</td>
+                    <td style={{ padding: '12px' }}>{assignment.routeName}</td>
+                    <td style={{ padding: '12px' }}>{assignment.date}</td>
+                    <td style={{ padding: '12px' }}>
+                      <button
+                        onClick={() => handleDeleteAssignment(assignment.id)}
+                        style={{ color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      >
+                        <Trash2 size={16} /> Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
@@ -638,6 +1808,8 @@ const DriverSchedulingSystem = () => {
           {activeTab === 'upload' && <UploadTab />}
           {activeTab === 'drivers' && <DriversTab />}
           {activeTab === 'routes' && <RoutesTab />}
+          {activeTab === 'availability' && <AvailabilityTab />}
+          {activeTab === 'assignments' && <AssignmentsTab />}
         </div>
       </div>
 
@@ -652,3 +1824,5 @@ const DriverSchedulingSystem = () => {
 };
 
 export default DriverSchedulingSystem;
+
+
