@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Calendar, Upload, Users, MapPin, Clock, AlertCircle, CheckCircle, Edit2, Save, X, RefreshCw, Trash2, Plus, MessageCircle, FileSpreadsheet, Maximize2, Minimize2, Settings, ChevronLeft, ChevronRight, Truck, Navigation2, Shield, Bell } from 'lucide-react';
+import { Calendar, Upload, Users, MapPin, Clock, AlertCircle, CheckCircle, Edit2, Save, X, RefreshCw, Trash2, Plus, MessageCircle, FileSpreadsheet, Maximize2, Minimize2, Settings, ChevronLeft, ChevronRight, Truck, Navigation2, Shield, Bell, GripVertical, Sparkles, Bot, ListChecks } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env?.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 const CHATBOT_URL = import.meta.env?.VITE_CHATBOT_URL || 'https://chat.bubbleexplorer.com/login';
 const SHEET_URL = import.meta.env?.VITE_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1eSjXF8_5GPyLr_spCQGcLU8Kx47XHcERlAUqROi8Hoc/edit?usp=sharing';
-const PLAN_ENDPOINT = import.meta.env?.VITE_PLAN_ENDPOINT || 'http://localhost:8000/api/v1/assistant/optimize-week';
+const PLAN_ENDPOINT = import.meta.env?.VITE_PLAN_ENDPOINT || '';
 const NOTIFY_ENDPOINT = import.meta.env?.VITE_NOTIFICATION_ENDPOINT || 'http://localhost:8000/api/v1/notifications';
 const NAV_TABS = [
   { id: 'upload', label: 'Upload', icon: Upload },
@@ -16,6 +16,83 @@ const NAV_TABS = [
   { id: 'sheet', label: 'Plan Sheet', icon: FileSpreadsheet },
   { id: 'planner', label: 'Planner', icon: Settings },
   { id: 'notifications', label: 'Notify', icon: Bell }
+];
+
+const DEFAULT_RULE_BLOCKS = [
+  {
+    id: 'weekly-limit',
+    baseId: 'weekly-limit',
+    title: 'Weekly hours ≤ 48h',
+    description: 'Matches max_weekly_hours in the optimizer so a driver never receives routes above 48 hours of work for the week.',
+    tag: 'hours'
+  },
+  {
+    id: 'consecutive-limit',
+    baseId: 'consecutive-limit',
+    title: 'Consecutive hours ≤ 36h',
+    description: 'Uses max_consecutive_hours to stop stacking long days back-to-back. Protects safety and matches optimizer guard rails.',
+    tag: 'fatigue'
+  },
+  {
+    id: 'availability',
+    baseId: 'availability',
+    title: 'Respect availability',
+    description: 'Skip any driver/date pair marked unavailable. Optimizer auto-adds F_ entries for unavailable drivers with no assignment.',
+    tag: 'availability'
+  },
+  {
+    id: 'fixed-first',
+    baseId: 'fixed-first',
+    title: 'Honor fixed assignments first',
+    description: 'Pre-assign locked routes (including Saturday 452SA special rule) before optimizing flexible routes.',
+    tag: 'priority'
+  },
+  {
+    id: 'one-route-per-day',
+    baseId: 'one-route-per-day',
+    title: 'One route per driver per day',
+    description: 'Daily constraint keeps a driver on a single route per date while maximizing coverage.',
+    tag: 'fairness'
+  },
+  {
+    id: 'hour-budgets',
+    baseId: 'hour-budgets',
+    title: 'Monthly hours guardrail',
+    description: 'Blocks assignments that exceed remaining monthly hours on the driver profile to avoid overscheduling.',
+    tag: 'capacity'
+  },
+  {
+    id: 'objective',
+    baseId: 'objective',
+    title: 'Capacity-weighted objective',
+    description: 'Solver favors assignments that fit remaining capacity (weighting by hours left) to balance workload while maximizing coverage.',
+    tag: 'objective'
+  }
+];
+
+const RULES_STORAGE_KEY = 'optimizer_rule_blocks_v1';
+const RULE_LIBRARY = [
+  {
+    id: 'fatigue-buffer',
+    baseId: 'fatigue-buffer',
+    title: 'Add fatigue buffer days (sample)',
+    description: 'After any day above 10 hours, block the next day unless capacity and availability allow a short shift. Use to reduce burnout.',
+    tag: 'sample'
+  },
+  {
+    id: 'weekend-protection',
+    baseId: 'weekend-protection',
+    title: 'Protect weekend capacity (sample)',
+    description: 'Keep at least 2 drivers under 16 weekly hours unassigned until Friday for weekend coverage.',
+    tag: 'sample'
+  },
+  {
+    id: 'spread-coverage',
+    baseId: 'spread-coverage',
+    title: 'Spread coverage across depots',
+    description: 'Prefer assignments that balance routes across depots to avoid overloading a single site (derive depot from route_code).',
+    tag: 'idea'
+  }
 ];
 
 const DriverSchedulingSystem = () => {
@@ -74,13 +151,73 @@ const DriverSchedulingSystem = () => {
   });
   const [chatFullscreen, setChatFullscreen] = useState(false);
   const [sheetFullscreen, setSheetFullscreen] = useState(false);
-  const [planEndpoint, setPlanEndpoint] = useState(PLAN_ENDPOINT);
+  const [planEndpoint, setPlanEndpoint] = useState(() => {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('planner_endpoint') : null;
+    return stored || PLAN_ENDPOINT || '';
+  });
   const [showPlanningPrompt, setShowPlanningPrompt] = useState(false);
   const [planningLoading, setPlanningLoading] = useState(false);
   const [notificationEndpoint, setNotificationEndpoint] = useState(NOTIFY_ENDPOINT);
   const [notificationLoading, setNotificationLoading] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [rejectedNotifications, setRejectedNotifications] = useState([]);
+  const [ruleBlocks, setRuleBlocks] = useState(DEFAULT_RULE_BLOCKS);
+  const [ruleLibrary, setRuleLibrary] = useState(RULE_LIBRARY);
+  const [draggingRuleId, setDraggingRuleId] = useState(null);
+  const [ruleDraft, setRuleDraft] = useState({ title: '', description: '', tag: 'custom' });
+  const [showRuleComposer, setShowRuleComposer] = useState(false);
+  const [showRuleChatbot, setShowRuleChatbot] = useState(true);
+  const [ruleChatbotExpanded, setRuleChatbotExpanded] = useState(false);
+  const [ruleChatbotPos, setRuleChatbotPos] = useState({ x: 24, y: 72 });
+  const [ruleChatbotSize, setRuleChatbotSize] = useState({ width: 420, height: 560 });
+  const chatbotDragRef = useRef({ mode: null, startX: 0, startY: 0, startPos: null, startSize: null });
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(RULES_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const normalized = parsed.map((rule) => ({
+            ...rule,
+            baseId: rule.baseId || rule.id
+          }));
+          setRuleBlocks(normalized);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load stored rules', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(RULES_STORAGE_KEY, JSON.stringify(ruleBlocks));
+    } catch (error) {
+      console.error('Failed to persist rules', error);
+    }
+  }, [ruleBlocks]);
+
+  useEffect(() => {
+    try {
+      if (planEndpoint) {
+        localStorage.setItem('planner_endpoint', planEndpoint);
+      }
+    } catch (error) {
+      console.error('Failed to persist planner endpoint', error);
+    }
+  }, [planEndpoint]);
+
+  useEffect(() => {
+    if (ruleChatbotExpanded && typeof window !== 'undefined') {
+      const margin = 24;
+      const width = ruleChatbotSize.width;
+      setRuleChatbotPos((pos) => ({
+        x: pos?.x || Math.max(margin, (window.innerWidth || 1200) - width - margin),
+        y: pos?.y || 72
+      }));
+    }
+  }, [ruleChatbotExpanded, ruleChatbotSize.width]);
 
   const validateMonday = (dateString) => {
     if (!dateString) return false;
@@ -179,6 +316,10 @@ const DriverSchedulingSystem = () => {
       setMessage({ type: 'error', text: 'Week start is missing for planning.' });
       return;
     }
+    if (!planEndpoint) {
+      setMessage({ type: 'error', text: 'Planning endpoint is missing. Set it in the Planner tab input (persisted in your browser).' });
+      return;
+    }
     setPlanningLoading(true);
     try {
       const response = await fetch(planEndpoint, {
@@ -197,6 +338,113 @@ const DriverSchedulingSystem = () => {
       setPlanningLoading(false);
       setShowPlanningPrompt(false);
     }
+  };
+
+  const handleRuleDragStart = (ruleId) => {
+    setDraggingRuleId(ruleId);
+  };
+
+  const handleRuleDragOver = (event, targetId) => {
+    event.preventDefault();
+    if (!draggingRuleId || draggingRuleId === targetId) return;
+
+    setRuleBlocks((prev) => {
+      const updated = [...prev];
+      const fromIndex = updated.findIndex((r) => r.id === draggingRuleId);
+      const toIndex = updated.findIndex((r) => r.id === targetId);
+      if (fromIndex === -1 || toIndex === -1) return prev;
+      const [moved] = updated.splice(fromIndex, 1);
+      updated.splice(toIndex, 0, moved);
+      return updated;
+    });
+  };
+
+  const handleRuleDrop = () => {
+    setDraggingRuleId(null);
+  };
+
+  const removeRuleBlock = (ruleId) => {
+    setRuleBlocks((prev) => {
+      const target = prev.find((rule) => rule.id === ruleId);
+      const remaining = prev.filter((rule) => rule.id !== ruleId);
+      if (target) {
+        const baseId = target.baseId || target.id;
+        setRuleLibrary((library) => {
+          const exists = library.some((r) => (r.baseId || r.id) === baseId);
+          if (exists) return library;
+          return [...library, { id: baseId, baseId, title: target.title, description: target.description, tag: target.tag || 'custom' }];
+        });
+      }
+      return remaining;
+    });
+  };
+
+  const startChatbotDrag = (event, mode) => {
+    if (!ruleChatbotExpanded) return;
+    event.preventDefault();
+    chatbotDragRef.current = {
+      mode,
+      startX: event.clientX,
+      startY: event.clientY,
+      startPos: ruleChatbotPos,
+      startSize: ruleChatbotSize
+    };
+    window.addEventListener('mousemove', handleChatbotDrag);
+    window.addEventListener('mouseup', stopChatbotDrag);
+  };
+
+  const handleChatbotDrag = (event) => {
+    const state = chatbotDragRef.current;
+    if (!state?.mode) return;
+    const dx = event.clientX - state.startX;
+    const dy = event.clientY - state.startY;
+
+    if (state.mode === 'move') {
+      setRuleChatbotPos({
+        x: Math.max(8, state.startPos.x + dx),
+        y: Math.max(8, state.startPos.y + dy)
+      });
+    } else if (state.mode === 'resize') {
+      setRuleChatbotSize({
+        width: Math.max(320, state.startSize.width + dx),
+        height: Math.max(360, state.startSize.height + dy)
+      });
+    }
+  };
+
+  const stopChatbotDrag = () => {
+    chatbotDragRef.current = { mode: null, startX: 0, startY: 0, startPos: null, startSize: null };
+    window.removeEventListener('mousemove', handleChatbotDrag);
+    window.removeEventListener('mouseup', stopChatbotDrag);
+  };
+
+  const addRuleBlock = () => {
+    if (!ruleDraft.title.trim() || !ruleDraft.description.trim()) {
+      setMessage({ type: 'error', text: 'Rule title and description are required.' });
+      return;
+    }
+
+    const baseId = ruleDraft.title.trim().toLowerCase().replace(/\s+/g, '-') || 'custom-rule';
+    const newRule = {
+      id: `rule-${Date.now()}`,
+      baseId,
+      title: ruleDraft.title.trim(),
+      description: ruleDraft.description.trim(),
+      tag: ruleDraft.tag.trim() || 'custom'
+    };
+
+    setRuleBlocks((prev) => [...prev, newRule]);
+    setRuleDraft({ title: '', description: '', tag: 'custom' });
+    setShowRuleComposer(false);
+    setMessage({ type: 'success', text: 'Rule added to the optimizer board.' });
+  };
+
+  const addRuleFromLibrary = (ruleId) => {
+    const rule = ruleLibrary.find((r) => r.id === ruleId || r.baseId === ruleId);
+    if (!rule) return;
+    const uniqueId = `${rule.baseId || rule.id}-${Date.now()}`;
+    setRuleBlocks((prev) => [...prev, { ...rule, id: uniqueId, baseId: rule.baseId || rule.id }]);
+    setMessage({ type: 'success', text: `Added "${rule.title}" from samples.` });
   };
 
   const fetchNotifications = async () => {
@@ -1993,38 +2241,271 @@ const DriverSchedulingSystem = () => {
   );
 
   const PlannerTab = () => (
-    <div className="panel" style={{ maxWidth: '520px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-        <Settings size={20} />
-        <h3 style={{ margin: 0 }}>Optimization endpoint</h3>
+    <div className="panel" style={{ maxWidth: '1200px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <ListChecks size={20} />
+          <h3 style={{ margin: 0 }}>Planner & optimizer rules</h3>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span className="pill" style={{ color: '#0f172a' }}>Drag cards to reprioritize</span>
+          <button className="ghost-button" onClick={() => { setRuleBlocks(DEFAULT_RULE_BLOCKS); setRuleLibrary(RULE_LIBRARY); }}>
+            <RefreshCw size={14} />
+            Reset defaults
+          </button>
+          <button className="primary-button" onClick={triggerPlanning} disabled={planningLoading} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            {planningLoading ? 'Sending…' : 'Send planning'}
+          </button>
+        </div>
       </div>
-      <p style={{ color: '#475569', marginBottom: '12px' }}>Configure where the planner JSON is sent after upload confirmation.</p>
-      <label style={{ fontSize: '14px', fontWeight: '600', color: '#0f172a' }}>Endpoint URL</label>
-      <input
-        type="text"
-        className="input"
-        value={planEndpoint}
-        onChange={(e) => setPlanEndpoint(e.target.value)}
-        style={{ width: '100%', marginBottom: '14px', marginTop: '6px' }}
-      />
-      <label style={{ fontSize: '14px', fontWeight: '600', color: '#0f172a' }}>Payload preview</label>
-      <pre style={{ marginTop: '6px', background: '#0f172a', color: '#e2e8f0', padding: '12px', borderRadius: '10px', fontSize: '13px' }}>
+      <p style={{ color: '#475569', marginBottom: '14px' }}>
+        Visualize the optimizer constraints as editable blocks. Reorder to show intent, add new rules, and capture notes from the Bubble chatbot alongside the planning endpoint.
+      </p>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 7fr) minmax(320px, 4fr)', gap: '16px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className="panel-compact" style={{ border: '1px solid #e2e8f0', background: '#f8fafc' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Settings size={18} />
+                <h4 style={{ margin: 0 }}>Optimizer rule board</h4>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button className="ghost-button" onClick={() => setShowRuleComposer(!showRuleComposer)}>
+                  <Sparkles size={14} />
+                  {showRuleComposer ? 'Hide composer' : 'New rule'}
+                </button>
+              </div>
+            </div>
+            <p style={{ color: '#475569', margin: '8px 0 12px' }}>
+              Based on the enhanced optimizer: weekly cap 48h, consecutive cap 36h, availability filters, fixed-first assignment, one route per driver per day, and capacity-weighted objectives.
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+              {ruleLibrary.map((rule) => (
+                <button
+                  key={rule.id}
+                  className="ghost-button"
+                  onClick={() => addRuleFromLibrary(rule.id)}
+                  style={{ padding: '8px 10px' }}
+                >
+                  <Plus size={14} />
+                  Add sample: {rule.title}
+                </button>
+              ))}
+              <span className="pill" style={{ color: '#0f172a' }}>Samples—ask chatbot for more</span>
+            </div>
+
+            {showRuleComposer && (
+              <div style={{ padding: '12px', borderRadius: '10px', background: '#fff', border: '1px dashed #cbd5e1', marginBottom: '12px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '13px', fontWeight: '700', color: '#0f172a' }}>Rule title</label>
+                    <input
+                      type="text"
+                      className="input"
+                      value={ruleDraft.title}
+                      onChange={(e) => setRuleDraft({ ...ruleDraft, title: e.target.value })}
+                      placeholder="e.g., Protect weekend capacity"
+                      style={{ marginTop: '6px' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '13px', fontWeight: '700', color: '#0f172a' }}>Tag</label>
+                    <input
+                      type="text"
+                      className="input"
+                      value={ruleDraft.tag}
+                      onChange={(e) => setRuleDraft({ ...ruleDraft, tag: e.target.value })}
+                      placeholder="priority, safety, custom"
+                      style={{ marginTop: '6px' }}
+                    />
+                  </div>
+                </div>
+                <div style={{ marginTop: '10px' }}>
+                  <label style={{ fontSize: '13px', fontWeight: '700', color: '#0f172a' }}>Description</label>
+                  <textarea
+                    className="input"
+                    value={ruleDraft.description}
+                    onChange={(e) => setRuleDraft({ ...ruleDraft, description: e.target.value })}
+                    placeholder="Describe how this should influence assignments or constraints."
+                    rows={3}
+                    style={{ width: '100%', marginTop: '6px' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: '10px', marginTop: '10px', justifyContent: 'flex-end' }}>
+                  <button className="ghost-button" onClick={() => setShowRuleComposer(false)}>
+                    <X size={14} />
+                    Cancel
+                  </button>
+                  <button className="primary-button" onClick={addRuleBlock}>
+                    <Plus size={14} />
+                    Add rule
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
+              {ruleBlocks.map((rule) => (
+                <div
+                  key={rule.id}
+                  className="panel-compact"
+                  draggable
+                  onDragStart={() => handleRuleDragStart(rule.id)}
+                  onDragOver={(e) => handleRuleDragOver(e, rule.id)}
+                  onDrop={handleRuleDrop}
+                  style={{
+                    cursor: 'grab',
+                    border: draggingRuleId === rule.id ? '1px dashed #2563eb' : '1px solid #e2e8f0',
+                    background: '#fff'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <GripVertical size={16} color="#94a3b8" />
+                      <span className="pill" style={{ color: '#0f172a', textTransform: 'capitalize' }}>{rule.tag || 'rule'}</span>
+                    </div>
+                    <button className="ghost-button" onClick={() => removeRuleBlock(rule.id)} style={{ padding: '6px 8px' }}>
+                      <Trash2 size={14} />
+                      Remove
+                    </button>
+                  </div>
+                  <h4 style={{ margin: '10px 0 6px', fontSize: '16px' }}>{rule.title}</h4>
+                  <p style={{ color: '#475569', lineHeight: 1.4 }}>{rule.description}</p>
+                </div>
+              ))}
+              {ruleBlocks.length === 0 && (
+                <div className="panel-compact" style={{ border: '1px dashed #cbd5e1', background: '#fff' }}>
+                  <p style={{ color: '#475569' }}>No rules yet. Add one or reset to defaults to pull in the optimizer constraints.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className="panel-compact" style={{ border: '1px solid #e2e8f0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <Settings size={18} />
+              <h4 style={{ margin: 0 }}>Planning endpoint</h4>
+            </div>
+            <p style={{ color: '#475569', marginBottom: '12px' }}>Configure where the planner JSON is sent after upload confirmation.</p>
+            <label style={{ fontSize: '14px', fontWeight: '600', color: '#0f172a' }}>Endpoint URL</label>
+            <input
+              type="text"
+              className="input"
+              value={planEndpoint}
+              onChange={(e) => setPlanEndpoint(e.target.value)}
+              style={{ width: '100%', marginBottom: '14px', marginTop: '6px' }}
+            />
+            <label style={{ fontSize: '14px', fontWeight: '600', color: '#0f172a' }}>Payload preview</label>
+            <pre style={{ marginTop: '6px', background: '#0f172a', color: '#e2e8f0', padding: '12px', borderRadius: '10px', fontSize: '13px' }}>
 {`POST ${planEndpoint}
 Content-Type: application/json
 
 {
   "week_start": "${weekStart || 'YYYY-MM-DD'}"
 }`}
-      </pre>
-      <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
-        <button
-          className="primary-button"
-          onClick={triggerPlanning}
-          disabled={planningLoading}
-        >
-          {planningLoading ? 'Sending…' : 'Send planning request'}
-        </button>
+            </pre>
+            <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
+              <button
+                className="primary-button"
+                onClick={triggerPlanning}
+                disabled={planningLoading}
+              >
+                {planningLoading ? 'Sending...' : 'Send planning request'}
+              </button>
+            </div>
+          </div>
+
+          <div className="panel-compact" style={{ border: '1px solid #e2e8f0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Bot size={18} />
+                <h4 style={{ margin: 0 }}>Rule helper chatbot</h4>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="ghost-button" onClick={() => setRuleChatbotExpanded(!ruleChatbotExpanded)} style={{ padding: '6px 10px' }}>
+                  {ruleChatbotExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                  {ruleChatbotExpanded ? 'Dock' : 'Float'}
+                </button>
+                <button className="ghost-button" onClick={() => setShowRuleChatbot(!showRuleChatbot)} style={{ padding: '6px 10px' }}>
+                  {showRuleChatbot ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                  {showRuleChatbot ? 'Hide' : 'Show'}
+                </button>
+              </div>
+            </div>
+            <p style={{ color: '#475569', margin: '8px 0 10px' }}>
+              Ask the Bubble chatbot to propose new constraints or descriptions, then drop them into the rule board.
+            </p>
+            {showRuleChatbot && !ruleChatbotExpanded && (
+              <div className="chatbot-frame" style={{ height: '360px', marginTop: '8px' }}>
+                <iframe
+                  title="Rule helper chatbot"
+                  src={CHATBOT_URL}
+                  allow="clipboard-write; microphone; camera"
+                />
+              </div>
+            )}
+            {showRuleChatbot && ruleChatbotExpanded && (
+              <div className="panel-compact" style={{ border: '1px dashed #cbd5e1', marginTop: '8px', background: '#fff' }}>
+                <p style={{ color: '#475569', margin: 0 }}>Floating window is open on the right. Click “Dock” to bring it back here.</p>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
+      {showRuleChatbot && ruleChatbotExpanded && (
+        <div
+          style={{
+            position: 'fixed',
+            top: `${ruleChatbotPos.y}px`,
+            left: `${ruleChatbotPos.x}px`,
+            width: `${ruleChatbotSize.width}px`,
+            height: `${ruleChatbotSize.height}px`,
+            zIndex: 50,
+            boxShadow: '0 18px 60px rgba(15,23,42,0.35)',
+            borderRadius: '14px',
+            overflow: 'hidden',
+            border: '1px solid #e2e8f0',
+            background: '#fff'
+          }}
+        >
+          <div
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: '#0b1224', color: '#e2e8f0', cursor: 'grab' }}
+            onMouseDown={(e) => startChatbotDrag(e, 'move')}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Bot size={16} />
+              <span style={{ fontWeight: 700 }}>Rule helper chatbot</span>
+            </div>
+            <button className="ghost-button" onClick={() => setRuleChatbotExpanded(false)} style={{ padding: '6px 10px', background: '#111827', color: '#e2e8f0', borderColor: '#334155' }}>
+              <Minimize2 size={14} />
+              Dock
+            </button>
+          </div>
+          <div className="chatbot-frame" style={{ height: 'calc(100% - 12px)', position: 'relative' }}>
+            <iframe
+              title="Rule helper chatbot floating"
+              src={CHATBOT_URL}
+              allow="clipboard-write; microphone; camera"
+            />
+            <div
+              style={{
+                position: 'absolute',
+                width: '16px',
+                height: '16px',
+                bottom: '6px',
+                right: '6px',
+                cursor: 'se-resize',
+                background: '#0b1224',
+                borderRadius: '4px'
+              }}
+              onMouseDown={(e) => startChatbotDrag(e, 'resize')}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 
