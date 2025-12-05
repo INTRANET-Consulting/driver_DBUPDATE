@@ -1,0 +1,17 @@
+# Virtual environments
+venv/
+venv*/
+backend/venv*/
+frontend/venv*/
+
+# Local env files (keep backend/frontend secrets out of git)
+.env
+backend/.env
+backend/.env.example
+backend/.env.dev
+frontend/.env
+frontend/.env.example
+
+# Python cache
+__pycache__/
+*.pyc
