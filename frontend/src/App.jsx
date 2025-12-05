@@ -1,7 +1,22 @@
-import React, { useState, useEffect } from 'react';
-import { Calendar, Upload, Users, MapPin, Clock, AlertCircle, CheckCircle, Edit2, Save, X, RefreshCw, Trash2, Plus } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Calendar, Upload, Users, MapPin, Clock, AlertCircle, CheckCircle, Edit2, Save, X, RefreshCw, Trash2, Plus, MessageCircle, FileSpreadsheet, Maximize2, Minimize2, Settings, ChevronLeft, ChevronRight, Truck, Navigation2, Shield, Bell } from 'lucide-react';
 
-const API_BASE_URL = 'http://localhost:8000/api/v1';
+const API_BASE_URL = import.meta.env?.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
+const CHATBOT_URL = import.meta.env?.VITE_CHATBOT_URL || 'https://chat.bubbleexplorer.com/login';
+const SHEET_URL = import.meta.env?.VITE_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1eSjXF8_5GPyLr_spCQGcLU8Kx47XHcERlAUqROi8Hoc/edit?usp=sharing';
+const PLAN_ENDPOINT = import.meta.env?.VITE_PLAN_ENDPOINT || 'http://localhost:8000/api/v1/assistant/optimize-week';
+const NOTIFY_ENDPOINT = import.meta.env?.VITE_NOTIFICATION_ENDPOINT || 'http://localhost:8000/api/v1/notifications';
+const NAV_TABS = [
+  { id: 'upload', label: 'Upload', icon: Upload },
+  { id: 'drivers', label: 'Drivers', icon: Users },
+  { id: 'routes', label: 'Routes', icon: MapPin },
+  { id: 'availability', label: 'Availability', icon: Clock },
+  { id: 'assignments', label: 'Fixed Assignments', icon: CheckCircle },
+  { id: 'chatbot', label: 'Chatbot', icon: MessageCircle },
+  { id: 'sheet', label: 'Plan Sheet', icon: FileSpreadsheet },
+  { id: 'planner', label: 'Planner', icon: Settings },
+  { id: 'notifications', label: 'Notify', icon: Bell }
+];
 
 const DriverSchedulingSystem = () => {
   const [activeTab, setActiveTab] = useState('upload');
@@ -57,6 +72,15 @@ const DriverSchedulingSystem = () => {
     duty_code: '',
     duty_name: ''
   });
+  const [chatFullscreen, setChatFullscreen] = useState(false);
+  const [sheetFullscreen, setSheetFullscreen] = useState(false);
+  const [planEndpoint, setPlanEndpoint] = useState(PLAN_ENDPOINT);
+  const [showPlanningPrompt, setShowPlanningPrompt] = useState(false);
+  const [planningLoading, setPlanningLoading] = useState(false);
+  const [notificationEndpoint, setNotificationEndpoint] = useState(NOTIFY_ENDPOINT);
+  const [notificationLoading, setNotificationLoading] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [rejectedNotifications, setRejectedNotifications] = useState([]);
 
   const validateMonday = (dateString) => {
     if (!dateString) return false;
@@ -139,8 +163,9 @@ const DriverSchedulingSystem = () => {
           type: 'success',
           text: `✅ Upload successful! Created ${data.records_created.drivers} drivers, ${data.records_created.routes} routes, ${data.records_created.fixed_assignments} fixed assignments.`
         });
-        
-        fetchWeeklyData(weekStart);
+
+        await fetchWeeklyData(weekStart);
+        setShowPlanningPrompt(true);
       }
     } catch (error) {
       setMessage({ type: 'error', text: error.message });
@@ -148,6 +173,132 @@ const DriverSchedulingSystem = () => {
       setLoading(false);
     }
   };
+
+  const triggerPlanning = async () => {
+    if (!weekStart) {
+      setMessage({ type: 'error', text: 'Week start is missing for planning.' });
+      return;
+    }
+    setPlanningLoading(true);
+    try {
+      const response = await fetch(planEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ week_start: weekStart })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to send planning request');
+      }
+      setMessage({ type: 'success', text: 'Planning request sent successfully.' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    } finally {
+      setPlanningLoading(false);
+      setShowPlanningPrompt(false);
+    }
+  };
+
+  const fetchNotifications = async () => {
+    setNotificationLoading(true);
+    try {
+      const response = await fetch(notificationEndpoint);
+      if (!response.ok) {
+        throw new Error('Failed to fetch notifications');
+      }
+      const data = await response.json();
+      const items = Array.isArray(data) ? data : data.notifications || [];
+      setNotifications(items);
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    } finally {
+      setNotificationLoading(false);
+    }
+  };
+
+  const sendNotification = async (accept = false) => {
+    if (!notificationPayload.driver_name || !notificationPayload.date || !notificationPayload.message) {
+      setMessage({ type: 'error', text: 'Driver, date, and message are required for notifications.' });
+      return;
+    }
+    setNotificationLoading(true);
+    try {
+      const response = await fetch(notificationEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...notificationPayload, accept })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to send notification');
+      }
+      setMessage({ type: 'success', text: accept ? 'Notification sent and accepted.' : 'Notification sent.' });
+      if (accept && weekStart && validateMonday(weekStart)) {
+        fetchWeeklyData(weekStart);
+      }
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    } finally {
+      setNotificationLoading(false);
+    }
+  };
+
+  const acceptNotification = async (notif) => {
+    const driver = drivers.find(d => d.name.toLowerCase() === notif.driver_name.toLowerCase());
+    if (!driver) {
+      setMessage({ type: 'error', text: `Driver "${notif.driver_name}" not found.` });
+      return;
+    }
+    setNotificationLoading(true);
+    try {
+      const payload = {
+        driver_id: driver.driver_id,
+        date: notif.date,
+        available: false,
+        notes: notif.reason || notif.message || 'Unavailable request'
+      };
+      const response = await fetch(`${API_BASE_URL}/weekly/availability`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to update availability');
+      }
+      const data = await response.json();
+      const driverName = driver.name;
+      setAvailability(prev => [...prev, { ...data, driver_name: driverName }]);
+      setNotifications(prev => prev.filter(n => n !== notif));
+      setMessage({ type: 'success', text: `Marked ${driverName} unavailable on ${notif.date}` });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    } finally {
+      setNotificationLoading(false);
+    }
+  };
+
+  const rejectNotification = (notif) => {
+    setNotifications(prev => prev.filter(n => n !== notif));
+    setRejectedNotifications(prev => [...prev, notif]);
+  };
+
+  const deleteNotification = async (notif) => {
+    setNotifications(prev => prev.filter(n => n !== notif));
+    if (notif.id) {
+      try {
+        await fetch(`${notificationEndpoint}/${notif.id}`, { method: 'DELETE' });
+      } catch {
+        /* ignore failures for now */
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'notifications') {
+      fetchNotifications();
+    }
+  }, [activeTab]);
 
   const fetchWeeklyData = async (date) => {
     if (!date || !validateMonday(date)) return;
@@ -177,8 +328,10 @@ const DriverSchedulingSystem = () => {
       setSummary(summaryData);
       
       setMessage({ type: 'success', text: 'Data loaded successfully' });
+      return true;
     } catch (error) {
       setMessage({ type: 'error', text: 'Failed to load data: ' + error.message });
+      return false;
     } finally {
       setLoading(false);
     }
@@ -192,6 +345,101 @@ const DriverSchedulingSystem = () => {
   const cleanObject = (obj) => Object.fromEntries(
     Object.entries(obj).filter(([, value]) => value !== null && value !== '' && value !== undefined)
   );
+
+  const formatDateLocal = (dateObj) => {
+    const y = dateObj.getFullYear();
+    const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const d = String(dateObj.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const parseDateLocal = (valueStr) => {
+    const [y, m, d] = valueStr.split('-').map(Number);
+    return new Date(y, m - 1, d, 12); // noon avoids TZ shifts
+  };
+
+  const DatePicker = ({ value, onChange, placeholder = 'Select date' }) => {
+    const [open, setOpen] = useState(false);
+    const [viewDate, setViewDate] = useState(value ? parseDateLocal(value) : new Date());
+    const pickerRef = useRef(null);
+
+    useEffect(() => {
+      const handler = (e) => {
+        if (pickerRef.current && !pickerRef.current.contains(e.target)) {
+          setOpen(false);
+        }
+      };
+      document.addEventListener('mousedown', handler);
+      return () => document.removeEventListener('mousedown', handler);
+    }, []);
+
+    useEffect(() => {
+      if (value) {
+        setViewDate(parseDateLocal(value));
+      }
+    }, [value]);
+
+    const buildCalendar = () => {
+      const first = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1);
+      const startOffset = (first.getDay() + 6) % 7; // Monday start
+      const start = new Date(first);
+      start.setDate(first.getDate() - startOffset);
+      const days = [];
+      for (let i = 0; i < 42; i++) {
+        const d = new Date(start);
+        d.setDate(start.getDate() + i);
+        days.push(d);
+      }
+      return days;
+    };
+
+    const monthLabel = viewDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const selectedValue = value ? value : '';
+
+    return (
+      <div className="date-picker" ref={pickerRef}>
+        <div className="date-input" onClick={() => setOpen(true)}>
+          <div>{selectedValue || placeholder}</div>
+          <Calendar size={16} />
+        </div>
+        {open && (
+          <div className="date-popover">
+            <div className="date-popover-header">
+              <button className="ghost-button" onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1))}>
+                <ChevronLeft size={16} />
+              </button>
+              <span>{monthLabel}</span>
+              <button className="ghost-button" onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1))}>
+                <ChevronRight size={16} />
+              </button>
+            </div>
+            <div className="date-grid">
+              {['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map((d) => (
+                <div key={d} className="date-grid-heading">{d}</div>
+              ))}
+              {buildCalendar().map((d) => {
+                const dateStr = formatDateLocal(d);
+                const isCurrentMonth = d.getMonth() === viewDate.getMonth();
+                const isSelected = selectedValue === dateStr;
+                return (
+                  <button
+                    key={dateStr + d.getTime()}
+                    className={`date-grid-cell ${isCurrentMonth ? '' : 'muted'} ${isSelected ? 'selected' : ''}`}
+                    onClick={() => {
+                      onChange(dateStr);
+                      setOpen(false);
+                    }}
+                  >
+                    {d.getDate()}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const handleDriverEdit = (driver) => {
     setEditingDriver(driver.driver_id);
@@ -596,14 +844,7 @@ const DriverSchedulingSystem = () => {
   };
 
   const UploadTab = () => (
-    <div style={{
-      backgroundColor: 'white',
-      borderRadius: '8px',
-      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-      padding: '24px',
-      maxWidth: '800px',
-      margin: '0 auto'
-    }}>
+    <div className="panel" style={{ maxWidth: '920px', margin: '0 auto' }}>
       <h2 style={{
         fontSize: '24px',
         fontWeight: 'bold',
@@ -645,18 +886,10 @@ const DriverSchedulingSystem = () => {
           <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '8px' }}>
             Week Start Date (Must be Monday)
           </label>
-          <input
-            type="date"
+          <DatePicker
             value={weekStart}
-            onChange={(e) => setWeekStart(e.target.value)}
-            style={{
-              display: 'block',
-              width: '100%',
-              padding: '10px 16px',
-              border: '1px solid #d1d5db',
-              borderRadius: '6px',
-              fontSize: '14px'
-            }}
+            onChange={(date) => setWeekStart(date)}
+            placeholder="Select Monday"
           />
           {weekStart && !validateMonday(weekStart) && (
             <p style={{ marginTop: '8px', fontSize: '14px', color: '#d97706', display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -795,12 +1028,7 @@ const DriverSchedulingSystem = () => {
       { label: 'Part time', value: 'part_time' }
     ];
     return (
-      <div style={{
-        backgroundColor: 'white',
-        borderRadius: '8px',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-        padding: '24px'
-      }}>
+      <div className="panel">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
           <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Users size={24} />
@@ -826,7 +1054,7 @@ const DriverSchedulingSystem = () => {
           </button>
         </div>
 
-        <div style={{ marginBottom: '24px', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '16px' }}>
+        <div className="panel muted" style={{ marginBottom: '24px' }}>
           <h3 style={{ fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Plus size={16} />
             Quick Add Driver
@@ -1135,7 +1363,7 @@ const DriverSchedulingSystem = () => {
           </button>
         </div>
         
-        <div style={{ marginBottom: '24px', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '16px' }}>
+        <div className="panel muted" style={{ marginBottom: '24px' }}>
           <h3 style={{ fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Plus size={16} />
             Quick Add Route
@@ -1148,11 +1376,10 @@ const DriverSchedulingSystem = () => {
               onChange={(e) => setNewRoute({ ...newRoute, route_name: e.target.value })}
               style={{ flex: '1', minWidth: '200px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
             />
-            <input
-              type="date"
+            <DatePicker
               value={newRoute.date}
-              onChange={(e) => setNewRoute({ ...newRoute, date: e.target.value })}
-              style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              onChange={(date) => setNewRoute({ ...newRoute, date })}
+              placeholder="Route date"
             />
             <input
               type="text"
@@ -1393,7 +1620,7 @@ const DriverSchedulingSystem = () => {
   const AvailabilityTab = () => {
     const sortedAvailability = [...availability].sort((a, b) => new Date(a.date) - new Date(b.date));
     return (
-      <div style={{ backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
+      <div className="panel">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
           <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Clock size={24} />
@@ -1418,7 +1645,7 @@ const DriverSchedulingSystem = () => {
           </button>
         </div>
 
-        <div style={{ marginBottom: '24px', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '16px' }}>
+        <div className="panel muted" style={{ marginBottom: '24px' }}>
           <h3 style={{ fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Plus size={16} />
             Add Manual Availability
@@ -1434,11 +1661,10 @@ const DriverSchedulingSystem = () => {
                 <option key={driver.driver_id} value={String(driver.driver_id)}>{driver.name}</option>
               ))}
             </select>
-            <input
-              type="date"
+            <DatePicker
               value={newAvailability.date}
-              onChange={(e) => setNewAvailability({ ...newAvailability, date: e.target.value })}
-              style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              onChange={(date) => setNewAvailability({ ...newAvailability, date })}
+              placeholder="Date"
             />
             <select
               value={newAvailability.available ? 'true' : 'false'}
@@ -1512,11 +1738,9 @@ const DriverSchedulingSystem = () => {
                       </td>
                       <td style={{ padding: '12px' }}>
                         {isEditing ? (
-                          <input
-                            type="date"
+                          <DatePicker
                             value={availabilityDraft?.date || record.date}
-                            onChange={(e) => setAvailabilityDraft(prev => ({ ...(prev || { ...record }), date: e.target.value }))}
-                            style={{ width: '100%', padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                            onChange={(date) => setAvailabilityDraft(prev => ({ ...(prev || { ...record }), date }))}
                           />
                         ) : (
                           record.date
@@ -1612,7 +1836,7 @@ const DriverSchedulingSystem = () => {
       return { ...assignment, driverName, routeName };
     });
     return (
-      <div style={{ backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
+      <div className="panel">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
           <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <CheckCircle size={24} />
@@ -1637,7 +1861,7 @@ const DriverSchedulingSystem = () => {
           </button>
         </div>
 
-        <div style={{ marginBottom: '24px', backgroundColor: '#f9fafb', borderRadius: '8px', padding: '16px' }}>
+        <div className="panel muted" style={{ marginBottom: '24px' }}>
           <h3 style={{ fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Plus size={16} />
             Create Assignment
@@ -1663,11 +1887,10 @@ const DriverSchedulingSystem = () => {
                 <option key={route.route_id} value={String(route.route_id)}>{route.route_name}</option>
               ))}
             </select>
-            <input
-              type="date"
+            <DatePicker
               value={newAssignment.date}
-              onChange={(e) => setNewAssignment({ ...newAssignment, date: e.target.value })}
-              style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+              onChange={(date) => setNewAssignment({ ...newAssignment, date })}
+              placeholder="Assignment date"
             />
             <button
               onClick={handleCreateAssignment}
@@ -1718,98 +1941,191 @@ const DriverSchedulingSystem = () => {
     );
   };
 
+  const ChatbotTab = () => (
+    <div className={`panel embed-wrapper ${chatFullscreen ? 'fullscreen' : ''}`} style={{ height: chatFullscreen ? '100%' : '80vh', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <MessageCircle size={24} />
+          Bubbleexplorer Chatbot
+        </h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span className="pill" style={{ color: '#0f172a' }}>Embedded</span>
+          <button className="ghost-button" onClick={() => setChatFullscreen(!chatFullscreen)}>
+            {chatFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            {chatFullscreen ? 'Exit full screen' : 'Full screen'}
+          </button>
+        </div>
+      </div>
+      <p style={{ color: '#475569' }}>You can sign in and chat directly without leaving the console.</p>
+      <div className="chatbot-frame">
+        <iframe
+          title="Bubbleexplorer Chatbot"
+          src={CHATBOT_URL}
+          allow="clipboard-write; microphone; camera"
+        />
+      </div>
+    </div>
+  );
+
+  const SheetTab = () => (
+    <div className={`panel embed-wrapper ${sheetFullscreen ? 'fullscreen' : ''}`} style={{ height: sheetFullscreen ? '100%' : '80vh', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <FileSpreadsheet size={24} />
+          Weekly Plan Sheet
+        </h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <a className="pill" style={{ color: '#0f172a' }} href={SHEET_URL} target="_blank" rel="noreferrer">Open in new tab</a>
+          <button className="ghost-button" onClick={() => setSheetFullscreen(!sheetFullscreen)}>
+            {sheetFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            {sheetFullscreen ? 'Exit full screen' : 'Full screen'}
+          </button>
+        </div>
+      </div>
+      <p style={{ color: '#475569' }}>Embedded Google Sheet view of the weekly plan.</p>
+      <div className="chatbot-frame">
+        <iframe
+          title="Weekly Plan Sheet"
+          src={SHEET_URL}
+        />
+      </div>
+    </div>
+  );
+
+  const PlannerTab = () => (
+    <div className="panel" style={{ maxWidth: '520px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+        <Settings size={20} />
+        <h3 style={{ margin: 0 }}>Optimization endpoint</h3>
+      </div>
+      <p style={{ color: '#475569', marginBottom: '12px' }}>Configure where the planner JSON is sent after upload confirmation.</p>
+      <label style={{ fontSize: '14px', fontWeight: '600', color: '#0f172a' }}>Endpoint URL</label>
+      <input
+        type="text"
+        className="input"
+        value={planEndpoint}
+        onChange={(e) => setPlanEndpoint(e.target.value)}
+        style={{ width: '100%', marginBottom: '14px', marginTop: '6px' }}
+      />
+      <label style={{ fontSize: '14px', fontWeight: '600', color: '#0f172a' }}>Payload preview</label>
+      <pre style={{ marginTop: '6px', background: '#0f172a', color: '#e2e8f0', padding: '12px', borderRadius: '10px', fontSize: '13px' }}>
+{`POST ${planEndpoint}
+Content-Type: application/json
+
+{
+  "week_start": "${weekStart || 'YYYY-MM-DD'}"
+}`}
+      </pre>
+      <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
+        <button
+          className="primary-button"
+          onClick={triggerPlanning}
+          disabled={planningLoading}
+        >
+          {planningLoading ? 'Sending…' : 'Send planning request'}
+        </button>
+      </div>
+    </div>
+  );
+
+  const NotificationsTab = () => (
+    <div className="panel" style={{ maxWidth: '720px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Bell size={20} />
+          <h3 style={{ margin: 0 }}>Notifications</h3>
+        </div>
+        <button className="ghost-button" onClick={fetchNotifications} disabled={notificationLoading}>
+          {notificationLoading ? 'Loading…' : 'Refresh'}
+        </button>
+      </div>
+      <p style={{ color: '#475569', marginBottom: '12px' }}>
+        Incoming requests (driver, date, reason). Accept updates availability; reject moves to a rejected list. Use your API (Postman) to POST to {notificationEndpoint}.
+      </p>
+
+      <h4 style={{ margin: '12px 0 8px', color: '#0f172a' }}>Incoming</h4>
+      {notifications.length === 0 ? (
+        <p style={{ color: '#6b7280' }}>No pending notifications.</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {notifications.map((n, idx) => (
+            <div key={`${n.id || idx}-${n.driver_name}-${n.date}`} style={{ border: '1px solid #e5e7eb', borderRadius: '12px', padding: '12px', display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
+              <div>
+                <p style={{ margin: 0, fontWeight: 700 }}>{n.driver_name || 'Unknown driver'}</p>
+                <p style={{ margin: '4px 0', color: '#475569', fontSize: '14px' }}>{n.date || 'No date'} • {n.reason || n.message || 'No reason provided'}</p>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="ghost-button" onClick={() => deleteNotification(n)} disabled={notificationLoading}>Delete</button>
+                <button className="ghost-button" onClick={() => rejectNotification(n)} disabled={notificationLoading}>Reject</button>
+                <button className="primary-button" onClick={() => acceptNotification(n)} disabled={notificationLoading}>Accept</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+    </div>
+  );
+
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#f3f4f6' }}>
-      <div style={{ background: 'linear-gradient(to right, #2563eb, #1e40af, #3730a3)', color: 'white', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-        <div style={{ maxWidth: '1280px', margin: '0 auto', padding: '24px 16px' }}>
-          <h1 style={{ fontSize: '28px', fontWeight: 'bold' }}>
-            🚌 Driver Scheduling Management System
-          </h1>
-          <p style={{ color: '#bfdbfe', marginTop: '4px' }}>Professional weekly planning and route management</p>
-        </div>
-      </div>
-
-      <div style={{ backgroundColor: 'white', borderBottom: '1px solid #e5e7eb', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', position: 'sticky', top: 0, zIndex: 10 }}>
-        <div style={{ maxWidth: '1280px', margin: '0 auto', padding: '0 16px' }}>
-          <div style={{ display: 'flex', gap: '4px', overflowX: 'auto' }}>
-            {[
-              { id: 'upload', label: 'Upload', icon: Upload },
-              { id: 'drivers', label: 'Drivers', icon: Users },
-              { id: 'routes', label: 'Routes', icon: MapPin },
-              { id: 'availability', label: 'Availability', icon: Clock },
-              { id: 'assignments', label: 'Fixed Assignments', icon: CheckCircle }
-            ].map(({ id, label, icon: Icon }) => (
-              <button
-                key={id}
-                onClick={() => {
-                  setActiveTab(id);
-                  if (id !== 'upload' && weekStart && validateMonday(weekStart)) {
-                    fetchWeeklyData(weekStart);
-                  }
-                }}
-                style={{
-                  padding: '16px 24px',
-                  fontWeight: '500',
-                  border: 'none',
-                  background: 'none',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  whiteSpace: 'nowrap',
-                  color: activeTab === id ? '#2563eb' : '#6b7280',
-                  borderBottom: activeTab === id ? '2px solid #2563eb' : '2px solid transparent',
-                  backgroundColor: activeTab === id ? '#eff6ff' : 'transparent'
-                }}
-              >
-                <Icon size={16} />
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ maxWidth: '1280px', margin: '0 auto', padding: '32px 16px' }}>
-        {activeTab !== 'upload' && (
-          <div style={{ marginBottom: '24px', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-              <label style={{ fontSize: '14px', fontWeight: '500', color: '#374151' }}>
-                Week Start (Monday):
-              </label>
-              <input
-                type="date"
-                value={weekStart}
-                onChange={(e) => {
-                  setWeekStart(e.target.value);
-                  if (validateMonday(e.target.value)) {
-                    fetchWeeklyData(e.target.value);
-                  }
-                }}
-                style={{ padding: '8px 16px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-              />
-              {weekStart && !validateMonday(weekStart) && (
-                <span style={{ fontSize: '14px', color: '#dc2626', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <AlertCircle size={16} />
-                  Please select a Monday
-                </span>
-              )}
-              {weekStart && validateMonday(weekStart) && (
-                <span style={{ fontSize: '14px', color: '#059669', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <CheckCircle size={16} />
-                  Valid week selected
-                </span>
-              )}
+    <div className="app-shell">
+      <div className="hero-bar">
+        <div className="hero-content">
+          <div className="hero-top">
+            <div>
+              <div className="brand-row">
+                <img
+                  src="/bubble-logo.png"
+                  alt="Bubble logo"
+                  className="brand-logo"
+                />
+                <span className="eyebrow">Operations console</span>
+              </div>
+              <h1 className="hero-title">
+                Driver Scheduling Management System
+              </h1>
+            </div>
+            <div className="hero-visual" aria-hidden="true">
+              <img src="/hero-bus.jpg" alt="" className="hero-visual-img" />
             </div>
           </div>
-        )}
+        </div>
+      </div>
 
+      <div className="tabbar-panel">
+        <div className="tab-strip">
+          {NAV_TABS.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              className={`tab-button ${activeTab === id ? 'active' : ''}`}
+              onClick={() => {
+                setActiveTab(id);
+                if (id !== 'upload' && weekStart && validateMonday(weekStart)) {
+                  fetchWeeklyData(weekStart);
+                }
+              }}
+            >
+              <Icon size={16} />
+              {label}
+              {id === 'notifications' && notifications.length > 0 && (
+                <span className="badge">{notifications.length}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="content-shell">
         <div>
           {activeTab === 'upload' && <UploadTab />}
           {activeTab === 'drivers' && <DriversTab />}
           {activeTab === 'routes' && <RoutesTab />}
           {activeTab === 'availability' && <AvailabilityTab />}
           {activeTab === 'assignments' && <AssignmentsTab />}
+          {activeTab === 'chatbot' && <ChatbotTab />}
+          {activeTab === 'sheet' && <SheetTab />}
+          {activeTab === 'planner' && <PlannerTab />}
+          {activeTab === 'notifications' && <NotificationsTab />}
         </div>
       </div>
 
@@ -1819,6 +2135,38 @@ const DriverSchedulingSystem = () => {
           to { transform: rotate(360deg); }
         }
       `}</style>
+
+      {showPlanningPrompt && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <Settings size={18} />
+              <h3 style={{ margin: 0 }}>Proceed with planning?</h3>
+            </div>
+            <p style={{ color: '#475569', marginBottom: '12px' }}>
+              The weekly data has been uploaded and synced. Send the payload to the optimizer?
+            </p>
+            <pre style={{ background: '#0f172a', color: '#e2e8f0', padding: '12px', borderRadius: '10px', fontSize: '13px', marginBottom: '12px' }}>
+{`POST ${planEndpoint}
+Content-Type: application/json
+
+{ "week_start": "${weekStart}" }`}
+            </pre>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button className="ghost-button" onClick={() => setShowPlanningPrompt(false)} disabled={planningLoading}>
+                Cancel
+              </button>
+              <button
+                className="primary-button"
+                onClick={triggerPlanning}
+                disabled={planningLoading}
+              >
+                {planningLoading ? 'Sending…' : 'Yes, send it'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

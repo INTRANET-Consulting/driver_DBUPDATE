@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from database.connection import db_manager
 from api.routes import upload, weekly_data
+from api.routes import notifications
 from config.settings import settings
 from services.google_sheets_service import google_sheets_service  # ← NEW IMPORT
 
@@ -50,6 +51,7 @@ app.add_middleware(
 # Include routers
 app.include_router(upload.router)
 app.include_router(weekly_data.router)
+app.include_router(notifications.router)
 
 
 @app.get("/")
