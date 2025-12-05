@@ -11,6 +11,7 @@ backend/.env.example
 backend/.env.dev
 frontend/.env
 frontend/.env.example
+backend/service-account-credentials.json
 
 # Python cache
 __pycache__/
