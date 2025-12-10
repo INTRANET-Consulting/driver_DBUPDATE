@@ -296,6 +296,35 @@ class DatabaseService:
     
     async def create_availability(self, availability_data: Dict[str, Any]) -> int:
         """Create or update driver availability"""
+        # Normalize inputs to avoid ambiguous parameter types
+        available_raw = availability_data.get('available', True)
+        if isinstance(available_raw, str):
+            available_normalized = available_raw.strip().lower() in ('true', '1', 'yes', 'y')
+        else:
+            available_normalized = bool(available_raw)
+
+        driver_id_value = availability_data.get('driver_id')
+        try:
+            driver_id_value = int(driver_id_value)
+        except (TypeError, ValueError):
+            driver_id_value = availability_data.get('driver_id')
+
+        date_raw = availability_data.get('date')
+        date_value = date_raw
+        if isinstance(date_raw, str):
+            try:
+                date_value = date.fromisoformat(date_raw)
+            except ValueError:
+                date_value = date_raw  # let DB error if invalid
+
+        shift_pref_value = availability_data.get('shift_preference')
+        if shift_pref_value is not None:
+            shift_pref_value = str(shift_pref_value)
+
+        notes_value = availability_data.get('notes')
+        if notes_value is not None:
+            notes_value = str(notes_value)
+
         # Check if exists
         existing_query = """
             SELECT id FROM driver_availability
@@ -303,20 +332,20 @@ class DatabaseService:
         """
         existing = await self.conn.fetchval(
             existing_query,
-            availability_data['driver_id'],
-            availability_data['date']
+            driver_id_value,
+            date_value
         )
-        
+
         if existing:
             # Update existing
             query = """
                 UPDATE driver_availability
                 SET available = $1,
-                    shift_preference = COALESCE($2, shift_preference),
+                    shift_preference = COALESCE($2::text, shift_preference),
                     notes = CASE 
-                        WHEN $3 IS NULL THEN notes
-                        WHEN notes IS NULL THEN $3
-                        ELSE notes || '; ' || $3
+                        WHEN $3::text IS NULL THEN notes
+                        WHEN notes IS NULL THEN $3::text
+                        ELSE notes || '; ' || $3::text
                     END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = $4
@@ -324,25 +353,25 @@ class DatabaseService:
             """
             avail_id = await self.conn.fetchval(
                 query,
-                availability_data['available'],
-                availability_data.get('shift_preference'),
-                availability_data.get('notes'),
+                available_normalized,
+                shift_pref_value,
+                notes_value,
                 existing
             )
         else:
             # Insert new
             query = """
                 INSERT INTO driver_availability (driver_id, date, available, shift_preference, notes)
-                VALUES ($1, $2, $3, $4, $5)
+                VALUES ($1::int, $2::date, $3::bool, $4::text, $5::text)
                 RETURNING id
             """
             avail_id = await self.conn.fetchval(
                 query,
-                availability_data['driver_id'],
-                availability_data['date'],
-                availability_data['available'],
-                availability_data.get('shift_preference'),
-                availability_data.get('notes')
+                driver_id_value,
+                date_value,
+                available_normalized,
+                shift_pref_value,
+                notes_value
             )
         
         return avail_id
