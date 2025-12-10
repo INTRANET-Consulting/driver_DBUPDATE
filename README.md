@@ -23,14 +23,15 @@ pip install -r requirements.txt
 # Configure env
 cp .env.example .env
 # Edit .env with your values:
-#   DATABASE_URL=postgres://...
+#   DATABASE_URL=postgres://...               # use Supabase pooled URL (host ...pooler.supabase.com, port 6543)
 #   SUPABASE_URL=...
 #   SUPABASE_KEY=...
-#   DEBUG=True|False
-#   FRONTEND_URL=http://localhost:5173        # your frontend origin
-#   GOOGLE_CREDENTIALS_FILE=service-account-credentials.json
+#   FRONTEND_URL=https://your-frontend-host   # or local origin during dev
+#   API_KEY=...                               # must match frontend VITE_API_KEY if enabled
+#   GOOGLE_CREDENTIALS_FILE=credentials.json  # place the provided credentials.json in backend/ (same folder as main.py)
 #   GOOGLE_SHEET_NAME=...
 #   ENABLE_GOOGLE_SHEETS_SYNC=True|False
+#   DEBUG=True|False
 
 # Run dev server
 python main.py         # starts on http://localhost:8000
@@ -53,6 +54,9 @@ cp .env.example .env
 # VITE_SHEET_URL=https://docs.google.com/spreadsheets/d/1eSjXF8_5GPyLr_spCQGcLU8Kx47XHcERlAUqROi8Hoc/edit?usp=sharing
 # VITE_PLAN_ENDPOINT=http://localhost:5000/api/v1/assistant/optimize-week    (from bacher_Driver_sceduler)
 # VITE_NOTIFICATION_ENDPOINT=http://localhost:5000/api/v1/notifications       
+# VITE_API_KEY=...                         # keep in sync with backend API_KEY
+# VITE_APP_USERNAME=...
+# VITE_APP_PASSWORD=...
 
 # Run dev server (default: http://localhost:5173)
 npm run dev
@@ -86,3 +90,9 @@ The frontend picks up `VITE_API_BASE_URL`; the backend should allow that origin 
 - Database schema: `backend/database/migrations.sql`
 - Frontend entry: `frontend/src/App.jsx`
 - Frontend styles: `frontend/src/index.css`
+
+## Hosting handoff checklist
+- Backend: copy `backend/.env.example` to `backend/.env`, fill real values (Supabase pooled `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_KEY`, `API_KEY`, `FRONTEND_URL`, etc.).
+- Credentials: place `credentials.json` in `backend/` and keep `GOOGLE_CREDENTIALS_FILE=credentials.json` in `backend/.env`.
+- Frontend: copy `frontend/.env.example` to `frontend/.env`, set `VITE_API_BASE_URL`, `VITE_PLAN_ENDPOINT`, `VITE_NOTIFICATION_ENDPOINT`, and `VITE_API_KEY` to match the backend.
+- Restart services after updating env files so changes take effect.
