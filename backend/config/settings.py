@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     GOOGLE_CREDENTIALS_FILE: str = "service-account-credentials.json"
     GOOGLE_SHEET_NAME: str = "Bachertest"
     ENABLE_GOOGLE_SHEETS_SYNC: bool = True
+    API_KEY: Optional[str] = None
     
     class Config:
         env_file = ".env"

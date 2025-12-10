@@ -6,6 +6,9 @@ const CHATBOT_URL = import.meta.env?.VITE_CHATBOT_URL || 'https://chat.bubbleexp
 const SHEET_URL = import.meta.env?.VITE_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1eSjXF8_5GPyLr_spCQGcLU8Kx47XHcERlAUqROi8Hoc/edit?usp=sharing';
 const PLAN_ENDPOINT = import.meta.env?.VITE_PLAN_ENDPOINT || '';
 const NOTIFY_ENDPOINT = import.meta.env?.VITE_NOTIFICATION_ENDPOINT || 'http://localhost:8000/api/v1/notifications';
+const APP_USERNAME = import.meta.env?.VITE_APP_USERNAME || '';
+const APP_PASSWORD = import.meta.env?.VITE_APP_PASSWORD || '';
+const API_KEY = import.meta.env?.VITE_API_KEY || '';
 const NAV_TABS = [
   { id: 'upload', label: 'Upload', icon: Upload },
   { id: 'drivers', label: 'Drivers', icon: Users },
@@ -96,6 +99,20 @@ const RULE_LIBRARY = [
 ];
 
 const DriverSchedulingSystem = () => {
+  const withApiKey = (headers = {}) => (API_KEY ? { ...headers, 'X-API-Key': API_KEY } : headers);
+  const jsonHeaders = (headers = {}) => ({
+    'Content-Type': 'application/json',
+    ...withApiKey(headers)
+  });
+  const fetchWithKey = (url, options = {}) => {
+    const mergedHeaders = withApiKey(options.headers || {});
+    return fetch(url, { ...options, headers: mergedHeaders });
+  };
+
+  const [authed, setAuthed] = useState(false);
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPass, setLoginPass] = useState('');
+  const [loginError, setLoginError] = useState(null);
   const [activeTab, setActiveTab] = useState('upload');
   const [weekStart, setWeekStart] = useState('');
   const [file, setFile] = useState(null);
@@ -174,6 +191,29 @@ const DriverSchedulingSystem = () => {
 
   useEffect(() => {
     try {
+      const storedAuth = localStorage.getItem('app_authed');
+      if (storedAuth === '1') {
+        setAuthed(true);
+      }
+    } catch (error) {
+      console.error('Failed to read auth state', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (authed) {
+        localStorage.setItem('app_authed', '1');
+      } else {
+        localStorage.removeItem('app_authed');
+      }
+    } catch (error) {
+      console.error('Failed to persist auth state', error);
+    }
+  }, [authed]);
+
+  useEffect(() => {
+    try {
       const stored = localStorage.getItem(RULES_STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
@@ -241,6 +281,19 @@ const DriverSchedulingSystem = () => {
     };
   };
 
+  const handleLogin = () => {
+    setLoginError(null);
+    if (!APP_USERNAME && !APP_PASSWORD) {
+      setAuthed(true);
+      return;
+    }
+    if (loginUser === APP_USERNAME && loginPass === APP_PASSWORD) {
+      setAuthed(true);
+      return;
+    }
+    setLoginError('Invalid credentials');
+  };
+
   const handleFileUpload = async () => {
     if (!file) {
       setMessage({ type: 'error', text: 'Please select a file' });
@@ -268,20 +321,21 @@ const DriverSchedulingSystem = () => {
       return;
     }
     
-    setLoading(true);
-    setMessage(null);
-    
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('week_start', weekStart);
-    formData.append('action', action);
-    formData.append('unavailable_drivers', '[]');
-    
-    try {
-      const response = await fetch(`${API_BASE_URL}/upload/weekly-plan`, {
-        method: 'POST',
-        body: formData,
-      });
+      setLoading(true);
+      setMessage(null);
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('week_start', weekStart);
+      formData.append('action', action);
+      formData.append('unavailable_drivers', '[]');
+      
+      try {
+        const response = await fetch(`${API_BASE_URL}/upload/weekly-plan`, {
+          method: 'POST',
+          headers: withApiKey(),
+          body: formData,
+        });
       
       const data = await response.json();
       
@@ -320,13 +374,13 @@ const DriverSchedulingSystem = () => {
       setMessage({ type: 'error', text: 'Planning endpoint is missing. Set it in the Planner tab input (persisted in your browser).' });
       return;
     }
-    setPlanningLoading(true);
-    try {
-      const response = await fetch(planEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ week_start: weekStart })
-      });
+      setPlanningLoading(true);
+      try {
+        const response = await fetch(planEndpoint, {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ week_start: weekStart })
+        });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.detail || 'Failed to send planning request');
@@ -450,7 +504,7 @@ const DriverSchedulingSystem = () => {
   const fetchNotifications = async () => {
     setNotificationLoading(true);
     try {
-      const response = await fetch(notificationEndpoint);
+      const response = await fetch(notificationEndpoint, { headers: withApiKey() });
       if (!response.ok) {
         throw new Error('Failed to fetch notifications');
       }
@@ -473,7 +527,7 @@ const DriverSchedulingSystem = () => {
     try {
       const response = await fetch(notificationEndpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify({ ...notificationPayload, accept })
       });
       if (!response.ok) {
@@ -507,7 +561,7 @@ const DriverSchedulingSystem = () => {
       };
       const response = await fetch(`${API_BASE_URL}/weekly/availability`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify(payload)
       });
       if (!response.ok) {
@@ -535,7 +589,7 @@ const DriverSchedulingSystem = () => {
     setNotifications(prev => prev.filter(n => n !== notif));
     if (notif.id) {
       try {
-        await fetch(`${notificationEndpoint}/${notif.id}`, { method: 'DELETE' });
+        await fetch(`${notificationEndpoint}/${notif.id}`, { method: 'DELETE', headers: withApiKey() });
       } catch {
         /* ignore failures for now */
       }
@@ -554,11 +608,11 @@ const DriverSchedulingSystem = () => {
     setLoading(true);
     try {
       const [driversRes, routesRes, availRes, assignRes, summaryRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/weekly/drivers?week_start=${date}`),
-        fetch(`${API_BASE_URL}/weekly/routes?week_start=${date}`),
-        fetch(`${API_BASE_URL}/weekly/availability?week_start=${date}`),
-        fetch(`${API_BASE_URL}/weekly/fixed-assignments?week_start=${date}`),
-        fetch(`${API_BASE_URL}/weekly/summary?week_start=${date}`)
+        fetchWithKey(`${API_BASE_URL}/weekly/drivers?week_start=${date}`),
+        fetchWithKey(`${API_BASE_URL}/weekly/routes?week_start=${date}`),
+        fetchWithKey(`${API_BASE_URL}/weekly/availability?week_start=${date}`),
+        fetchWithKey(`${API_BASE_URL}/weekly/fixed-assignments?week_start=${date}`),
+        fetchWithKey(`${API_BASE_URL}/weekly/summary?week_start=${date}`)
       ]);
       
       const [driversData, routesData, availData, assignData, summaryData] = await Promise.all([
@@ -735,7 +789,7 @@ const DriverSchedulingSystem = () => {
     try {
       const response = await fetch(`${API_BASE_URL}/weekly/drivers/${editingDriver}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify(payload)
       });
       if (!response.ok) {
@@ -773,7 +827,7 @@ const DriverSchedulingSystem = () => {
     try {
       const response = await fetch(`${API_BASE_URL}/weekly/drivers`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify(payload)
       });
       if (!response.ok) {
@@ -805,7 +859,8 @@ const DriverSchedulingSystem = () => {
     }
     try {
       const response = await fetch(`${API_BASE_URL}/weekly/drivers/${driverId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: withApiKey()
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -865,7 +920,7 @@ const DriverSchedulingSystem = () => {
     try {
       const response = await fetch(`${API_BASE_URL}/weekly/routes/${editingRoute}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify(payload)
       });
       if (!response.ok) {
@@ -906,7 +961,7 @@ const DriverSchedulingSystem = () => {
     try {
       const response = await fetch(`${API_BASE_URL}/weekly/routes`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify(payload)
       });
       if (!response.ok) {
@@ -940,7 +995,8 @@ const DriverSchedulingSystem = () => {
     }
     try {
       const response = await fetch(`${API_BASE_URL}/weekly/routes/${routeId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: withApiKey()
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -982,7 +1038,7 @@ const DriverSchedulingSystem = () => {
     try {
       const response = await fetch(`${API_BASE_URL}/weekly/availability/${editingAvailability}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify(payload)
       });
       if (!response.ok) {
@@ -1016,7 +1072,7 @@ const DriverSchedulingSystem = () => {
     try {
       const response = await fetch(`${API_BASE_URL}/weekly/availability`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify(payload)
       });
       if (!response.ok) {
@@ -1052,7 +1108,7 @@ const DriverSchedulingSystem = () => {
     try {
       const response = await fetch(`${API_BASE_URL}/weekly/fixed-assignments`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify(payload)
       });
       if (!response.ok) {
@@ -1078,7 +1134,8 @@ const DriverSchedulingSystem = () => {
   const handleDeleteAssignment = async (assignmentId) => {
     try {
       const response = await fetch(`${API_BASE_URL}/weekly/fixed-assignments/${assignmentId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: withApiKey()
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -2547,6 +2604,36 @@ Content-Type: application/json
 
     </div>
   );
+
+  if (!authed) {
+    return (
+      <div className="app-shell" style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#0b1224' }}>
+        <div className="panel" style={{ width: '360px', boxShadow: '0 16px 48px rgba(0,0,0,0.25)' }}>
+          <h2 style={{ marginBottom: '12px' }}>Sign in</h2>
+          <p style={{ color: '#475569', marginBottom: '16px' }}>Enter the console credentials to continue.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <input
+              className="input"
+              placeholder="Username"
+              value={loginUser}
+              onChange={(e) => setLoginUser(e.target.value)}
+            />
+            <input
+              className="input"
+              placeholder="Password"
+              type="password"
+              value={loginPass}
+              onChange={(e) => setLoginPass(e.target.value)}
+            />
+            {loginError && <p style={{ color: '#dc2626', margin: 0 }}>{loginError}</p>}
+            <button className="primary-button" onClick={handleLogin}>
+              Sign in
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">

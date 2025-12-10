@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -31,12 +31,27 @@ async def lifespan(app: FastAPI):
     print("✅ Cleanup complete")
 
 
+# Simple API key dependency
+def verify_api_key(x_api_key: str = Header(None)):
+    if not settings.API_KEY:
+        return
+    if x_api_key != settings.API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key"
+        )
+
 # Create FastAPI app
+# Disable docs in all environments (set to True to temporarily expose)
+show_docs = False
 app = FastAPI(
     title="Driver Scheduling Upload System",
     description="Upload weekly planning Excel files and manage driver schedules",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs" if show_docs else None,
+    redoc_url="/redoc" if show_docs else None,
+    openapi_url="/openapi.json" if show_docs else None,
 )
 
 # Configure CORS
@@ -48,10 +63,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(upload.router)
-app.include_router(weekly_data.router)
-app.include_router(notifications.router)
+# Include routers with API key guard
+dependencies = [Depends(verify_api_key)]
+app.include_router(upload.router, dependencies=dependencies)
+app.include_router(weekly_data.router, dependencies=dependencies)
+app.include_router(notifications.router, dependencies=dependencies)
 
 
 @app.get("/")
