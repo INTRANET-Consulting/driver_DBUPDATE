@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Depends, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-
 from database.connection import db_manager
 from api.routes import upload, weekly_data
 from api.routes import notifications
