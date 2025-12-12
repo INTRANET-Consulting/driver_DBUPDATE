@@ -21,6 +21,22 @@ const NAV_TABS = [
   { id: 'notifications', label: 'Notify', icon: Bell }
 ];
 
+const DAY_OPTIONS = [
+  { value: 'Monday', label: 'Monday' },
+  { value: 'Tuesday', label: 'Tuesday' },
+  { value: 'Wednesday', label: 'Wednesday' },
+  { value: 'Thursday', label: 'Thursday' },
+  { value: 'Friday', label: 'Friday' },
+  { value: 'Saturday', label: 'Saturday' },
+  { value: 'Sunday', label: 'Sunday' }
+];
+
+const ROUTE_TYPE_OPTIONS = [
+  { value: 'regular', label: 'Regular' },
+  { value: 'saturday', label: 'Saturday' },
+  { value: 'sunday', label: 'Sunday' }
+];
+
 const DEFAULT_RULE_BLOCKS = [
   {
     id: 'weekly-limit',
@@ -119,6 +135,7 @@ const DriverSchedulingSystem = () => {
   const [action, setAction] = useState('replace');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState(null);
+  const [toast, setToast] = useState(null);
   
   const [drivers, setDrivers] = useState([]);
   const [routes, setRoutes] = useState([]);
@@ -655,9 +672,103 @@ const DriverSchedulingSystem = () => {
     return `${y}-${m}-${d}`;
   };
 
+  useEffect(() => {
+    if (message) {
+      setToast({ type: message.type, text: message.text });
+      const timer = setTimeout(() => setToast(null), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [message]);
+
   const parseDateLocal = (valueStr) => {
     const [y, m, d] = valueStr.split('-').map(Number);
     return new Date(y, m - 1, d, 12); // noon avoids TZ shifts
+  };
+
+  const MessageBanner = () => {
+    if (!message) return null;
+    return (
+      <div style={{
+        margin: '16px 0',
+        padding: '16px',
+        borderRadius: '8px',
+        backgroundColor: message.type === 'success' ? '#ecfdf5' : '#fef2f2',
+        border: `1px solid ${message.type === 'success' ? '#86efac' : '#fca5a5'}`
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+          {message.type === 'success' ? (
+            <CheckCircle size={20} style={{ color: '#059669', flexShrink: 0 }} />
+          ) : (
+            <AlertCircle size={20} style={{ color: '#dc2626', flexShrink: 0 }} />
+          )}
+          <div style={{ flex: 1 }}>
+            <p style={{ color: message.type === 'success' ? '#065f46' : '#991b1b' }}>
+              {message.text}
+            </p>
+            {message.suggestions && (
+              <div style={{ marginTop: '12px' }}>
+                <p style={{ fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '8px' }}>
+                  Use one of these Mondays instead:
+                </p>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => setWeekStart(message.suggestions.previous)}
+                    className="secondary-button"
+                  >
+                    {message.suggestions.previous}
+                  </button>
+                  <button
+                    onClick={() => setWeekStart(message.suggestions.next)}
+                    className="secondary-button"
+                  >
+                    {message.suggestions.next}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          <button
+            onClick={() => setMessage(null)}
+            className="ghost-button"
+            style={{ padding: '6px', lineHeight: 1 }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const MessageToast = () => {
+    if (!toast) return null;
+    const isSuccess = toast.type === 'success';
+    return (
+      <div style={{
+        position: 'fixed',
+        bottom: '16px',
+        right: '16px',
+        minWidth: '280px',
+        maxWidth: '420px',
+        padding: '12px 14px',
+        borderRadius: '10px',
+        boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
+        backgroundColor: isSuccess ? '#0f172a' : '#7f1d1d',
+        color: '#f8fafc',
+        zIndex: 100
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+          {isSuccess ? <CheckCircle size={18} /> : <AlertCircle size={18} />}
+          <div style={{ flex: 1, lineHeight: 1.4 }}>{toast.text}</div>
+          <button
+            onClick={() => setToast(null)}
+            className="ghost-button"
+            style={{ color: '#f8fafc', padding: '4px', lineHeight: 1 }}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      </div>
+    );
   };
 
   const DatePicker = ({ value, onChange, placeholder = 'Select date' }) => {
@@ -880,6 +991,7 @@ const DriverSchedulingSystem = () => {
     setRouteDraft({
       route_name: route.route_name,
       day_of_week: route.day_of_week || '',
+      type: route.details.type || '',
       duration_hours: route.details.duration_hours ?? '',
       diaten: route.details.diaten ?? '',
       vad_time: route.details.vad_time || '',
@@ -903,6 +1015,7 @@ const DriverSchedulingSystem = () => {
     const durationValue = routeDraft.duration_hours === '' ? null : parseFloat(routeDraft.duration_hours);
     const diatenValue = routeDraft.diaten === '' ? null : parseFloat(routeDraft.diaten);
     const detailsPayload = cleanObject({
+      type: routeDraft.type || null,
       duration_hours: Number.isNaN(durationValue) ? null : durationValue,
       diaten: Number.isNaN(diatenValue) ? null : diatenValue,
       vad_time: routeDraft.vad_time || null,
@@ -1000,6 +1113,9 @@ const DriverSchedulingSystem = () => {
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
+        if (response.status === 409) {
+          throw new Error('Cannot delete this route because a fixed route is assigned to a driver. Edit that fixed assignment first.');
+        }
         throw new Error(error.detail || 'Failed to delete route');
       }
       setRoutes(routes.filter(r => r.route_id !== routeId));
@@ -1148,7 +1264,7 @@ const DriverSchedulingSystem = () => {
     }
   };
 
-  const UploadTab = () => (
+  const renderUploadTab = () => (
     <div className="panel" style={{ maxWidth: '920px', margin: '0 auto' }}>
       <h2 style={{
         fontSize: '24px',
@@ -1263,70 +1379,10 @@ const DriverSchedulingSystem = () => {
           )}
         </button>
       </div>
-      
-      {message && (
-        <div style={{
-          marginTop: '24px',
-          padding: '16px',
-          borderRadius: '8px',
-          backgroundColor: message.type === 'success' ? '#ecfdf5' : '#fef2f2',
-          border: `1px solid ${message.type === 'success' ? '#86efac' : '#fca5a5'}`
-        }}>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-            {message.type === 'success' ? (
-              <CheckCircle size={20} style={{ color: '#059669', flexShrink: 0 }} />
-            ) : (
-              <AlertCircle size={20} style={{ color: '#dc2626', flexShrink: 0 }} />
-            )}
-            <div style={{ flex: 1 }}>
-              <p style={{ color: message.type === 'success' ? '#065f46' : '#991b1b' }}>
-                {message.text}
-              </p>
-              {message.suggestions && (
-                <div style={{ marginTop: '12px' }}>
-                  <p style={{ fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '8px' }}>
-                    Use one of these Mondays instead:
-                  </p>
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    <button
-                      onClick={() => setWeekStart(message.suggestions.previous)}
-                      style={{
-                        padding: '6px 12px',
-                        backgroundColor: '#dbeafe',
-                        color: '#1e40af',
-                        borderRadius: '4px',
-                        fontSize: '14px',
-                        border: 'none',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      {message.suggestions.previous} (Previous Monday)
-                    </button>
-                    <button
-                      onClick={() => setWeekStart(message.suggestions.next)}
-                      style={{
-                        padding: '6px 12px',
-                        backgroundColor: '#dbeafe',
-                        color: '#1e40af',
-                        borderRadius: '4px',
-                        fontSize: '14px',
-                        border: 'none',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      {message.suggestions.next} (Next Monday)
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 
-  const DriversTab = () => {
+  const renderDriversTab = () => {
     const driverTypes = [
       { label: 'Full time', value: 'full_time' },
       { label: 'Reduced hours', value: 'reduced_hours' },
@@ -1626,7 +1682,7 @@ const DriverSchedulingSystem = () => {
     );
   };
 
-  const RoutesTab = () => {
+  const renderRoutesTab = () => {
     const groupedRoutes = routes.reduce((acc, route) => {
       const date = route.date;
       if (!acc[date]) acc[date] = [];
@@ -1686,20 +1742,26 @@ const DriverSchedulingSystem = () => {
               onChange={(date) => setNewRoute({ ...newRoute, date })}
               placeholder="Route date"
             />
-            <input
-              type="text"
-              placeholder="Day of week"
+            <select
               value={newRoute.day_of_week}
               onChange={(e) => setNewRoute({ ...newRoute, day_of_week: e.target.value })}
               style={{ width: '150px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-            />
-            <input
-              type="text"
-              placeholder="Type"
+            >
+              <option value="">Day of week</option>
+              {DAY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <select
               value={newRoute.type}
               onChange={(e) => setNewRoute({ ...newRoute, type: e.target.value })}
               style={{ width: '150px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-            />
+            >
+              <option value="">Type</option>
+              {ROUTE_TYPE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
             <input
               type="number"
               step="0.1"
@@ -1833,13 +1895,28 @@ const DriverSchedulingSystem = () => {
                               onChange={(e) => setRouteDraft({ ...routeDraft, route_name: e.target.value })}
                               style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
                             />
-                            <input
-                              type="text"
-                              placeholder="Day of week"
-                              value={routeDraft?.day_of_week || ''}
-                              onChange={(e) => setRouteDraft({ ...routeDraft, day_of_week: e.target.value })}
-                              style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
-                            />
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <select
+                                value={routeDraft?.day_of_week || ''}
+                                onChange={(e) => setRouteDraft({ ...routeDraft, day_of_week: e.target.value })}
+                                style={{ flex: 1, padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                              >
+                                <option value="">Day of week</option>
+                                {DAY_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                              <select
+                                value={routeDraft?.type || ''}
+                                onChange={(e) => setRouteDraft({ ...routeDraft, type: e.target.value })}
+                                style={{ flex: 1, padding: '6px', border: '1px solid #d1d5db', borderRadius: '6px' }}
+                              >
+                                <option value="">Type</option>
+                                {ROUTE_TYPE_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </div>
                             <div style={{ display: 'flex', gap: '8px' }}>
                               <input
                                 type="number"
@@ -1922,7 +1999,7 @@ const DriverSchedulingSystem = () => {
     );
   };
 
-  const AvailabilityTab = () => {
+  const renderAvailabilityTab = () => {
     const sortedAvailability = [...availability].sort((a, b) => new Date(a.date) - new Date(b.date));
     return (
       <div className="panel">
@@ -2134,7 +2211,7 @@ const DriverSchedulingSystem = () => {
     );
   };
 
-  const AssignmentsTab = () => {
+  const renderAssignmentsTab = () => {
     const assignmentRows = fixedAssignments.map((assignment) => {
       const driverName = assignment.driver_name || drivers.find(d => d.driver_id === assignment.driver_id)?.name || 'Unknown';
       const routeName = assignment.route_name || (assignment.route_id ? routes.find(r => r.route_id === assignment.route_id)?.route_name : null) || 'Unassigned';
@@ -2246,7 +2323,7 @@ const DriverSchedulingSystem = () => {
     );
   };
 
-  const ChatbotTab = () => (
+  const renderChatbotTab = () => (
     <div className={`panel embed-wrapper ${chatFullscreen ? 'fullscreen' : ''}`} style={{ height: chatFullscreen ? '100%' : '80vh', display: 'flex', flexDirection: 'column', gap: '12px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -2272,7 +2349,7 @@ const DriverSchedulingSystem = () => {
     </div>
   );
 
-  const SheetTab = () => (
+  const renderSheetTab = () => (
     <div className={`panel embed-wrapper ${sheetFullscreen ? 'fullscreen' : ''}`} style={{ height: sheetFullscreen ? '100%' : '80vh', display: 'flex', flexDirection: 'column', gap: '12px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -2297,7 +2374,7 @@ const DriverSchedulingSystem = () => {
     </div>
   );
 
-  const PlannerTab = () => (
+  const renderPlannerTab = () => (
     <div className="panel" style={{ maxWidth: '1200px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -2566,7 +2643,7 @@ Content-Type: application/json
     </div>
   );
 
-  const NotificationsTab = () => (
+  const renderNotificationsTab = () => (
     <div className="panel" style={{ maxWidth: '720px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -2684,18 +2761,25 @@ Content-Type: application/json
       </div>
 
       <div className="content-shell">
+        <MessageBanner />
         <div>
-          {activeTab === 'upload' && <UploadTab />}
-          {activeTab === 'drivers' && <DriversTab />}
-          {activeTab === 'routes' && <RoutesTab />}
-          {activeTab === 'availability' && <AvailabilityTab />}
-          {activeTab === 'assignments' && <AssignmentsTab />}
-          {activeTab === 'chatbot' && <ChatbotTab />}
-          {activeTab === 'sheet' && <SheetTab />}
-          {activeTab === 'planner' && <PlannerTab />}
-          {activeTab === 'notifications' && <NotificationsTab />}
+          {activeTab === 'upload' && renderUploadTab()}
+          {activeTab === 'drivers' && renderDriversTab()}
+          {activeTab === 'routes' && renderRoutesTab()}
+          {activeTab === 'availability' && renderAvailabilityTab()}
+          {activeTab === 'assignments' && renderAssignmentsTab()}
+          {activeTab === 'planner' && renderPlannerTab()}
+          {activeTab === 'notifications' && renderNotificationsTab()}
+          <div style={{ display: activeTab === 'chatbot' ? 'block' : 'none' }}>
+            {renderChatbotTab()}
+          </div>
+          <div style={{ display: activeTab === 'sheet' ? 'block' : 'none' }}>
+            {renderSheetTab()}
+          </div>
         </div>
       </div>
+
+      <MessageToast />
 
       <style>{`
         @keyframes spin {
@@ -2740,5 +2824,3 @@ Content-Type: application/json
 };
 
 export default DriverSchedulingSystem;
-
-

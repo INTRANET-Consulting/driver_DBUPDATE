@@ -135,7 +135,14 @@ async def delete_route(
 ):
     """Delete a route"""
     db_service = DatabaseService(conn)
-    deleted = await db_service.delete_route(route_id)
+    try:
+        deleted = await db_service.delete_route(route_id)
+    except asyncpg.ForeignKeyViolationError:
+        # Route is referenced by a fixed assignment; surface a clear message to the UI
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete this route because it is assigned to a driver as a fixed route. Edit or remove that assignment first."
+        )
     if not deleted:
         raise HTTPException(status_code=404, detail="Route not found")
 
