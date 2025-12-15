@@ -21,56 +21,54 @@ class DatabaseService:
     # ============= SEQUENCE RESET =============
     
     async def reset_sequences(self):
-        """Reset all auto-increment sequences to start from 1"""
+        """
+        Realign all auto-increment sequences to the current max IDs.
+        
+        This avoids primary key collisions when existing rows remain (e.g., after a failed cleanup).
+        """
+        sequences = [
+            ("drivers", "driver_id", "drivers_driver_id_seq"),
+            ("routes", "route_id", "routes_route_id_seq"),
+            ("driver_availability", "id", "driver_availability_id_seq"),
+            ("fixed_assignments", "id", "fixed_assignments_id_seq"),
+        ]
+
         try:
-            # Reset drivers sequence - restart numbering from 1
-            await self.conn.execute("""
-                ALTER SEQUENCE drivers_driver_id_seq RESTART WITH 1;
-            """)
-            
-            # Reset routes sequence
-            await self.conn.execute("""
-                ALTER SEQUENCE routes_route_id_seq RESTART WITH 1;
-            """)
-            
-            # Reset driver_availability sequence
-            await self.conn.execute("""
-                ALTER SEQUENCE driver_availability_id_seq RESTART WITH 1;
-            """)
-            
-            # Reset fixed_assignments sequence
-            await self.conn.execute("""
-                ALTER SEQUENCE fixed_assignments_id_seq RESTART WITH 1;
-            """)
-            
-            print("✅ All ID sequences reset to start from 1")
-            
+            for table, pk_column, seq_name in sequences:
+                await self.conn.execute(
+                    f"""
+                    SELECT setval(
+                        '{seq_name}',
+                        COALESCE((SELECT MAX({pk_column}) FROM {table}), 0) + 1,
+                        false
+                    );
+                    """
+                )
+            print("✅ ID sequences aligned to current max values")
         except Exception as e:
-            print(f"⚠️ Could not reset sequences: {str(e)}")
-            # Try alternative method using setval
-            try:
-                await self.conn.execute("SELECT setval('drivers_driver_id_seq', 1, false);")
-                await self.conn.execute("SELECT setval('routes_route_id_seq', 1, false);")
-                await self.conn.execute("SELECT setval('driver_availability_id_seq', 1, false);")
-                await self.conn.execute("SELECT setval('fixed_assignments_id_seq', 1, false);")
-                print("✅ Sequences reset using setval method")
-            except Exception as e2:
-                print(f"❌ Both sequence reset methods failed: {str(e2)}")
-                raise
+            print(f"❌ Could not realign sequences: {str(e)}")
+            raise
     
     async def clear_all_week_data(self):
         """Clear ALL data from all tables and reset sequences"""
         print("🗑️  Clearing ALL data from database...")
         
-        # Delete in correct order (respecting foreign keys)
-        await self.conn.execute("DELETE FROM fixed_assignments")
-        await self.conn.execute("DELETE FROM driver_availability")
-        await self.conn.execute("DELETE FROM routes")
-        await self.conn.execute("DELETE FROM drivers")
-        
-        print("✅ All data cleared")
-        
-        # Reset sequences to start from 1
+        # Try fast truncate with identity reset; fall back to explicit deletes if needed
+        try:
+            await self.conn.execute("""
+                TRUNCATE TABLE fixed_assignments, driver_availability, routes, drivers
+                RESTART IDENTITY CASCADE;
+            """)
+            print("✅ Tables truncated and identities reset")
+        except Exception as e:
+            print(f"⚠️ TRUNCATE failed, falling back to DELETE workflow: {e}")
+            await self.conn.execute("DELETE FROM fixed_assignments")
+            await self.conn.execute("DELETE FROM driver_availability")
+            await self.conn.execute("DELETE FROM routes")
+            await self.conn.execute("DELETE FROM drivers")
+            print("✅ All data cleared via DELETE statements")
+
+        # Ensure sequences are in sync with the current data state (empty or otherwise)
         await self.reset_sequences()
     
     async def clear_week_data(self, week_start: date):
@@ -241,13 +239,28 @@ class DatabaseService:
                 VALUES ($1, $2, $3, $4)
                 RETURNING route_id
             """
-            route_id = await self.conn.fetchval(
-                query,
-                route_data['date'],
-                route_data['route_name'],
-                json.dumps(route_data['details']),
-                route_data.get('day_of_week')
-            )
+            try:
+                route_id = await self.conn.fetchval(
+                    query,
+                    route_data['date'],
+                    route_data['route_name'],
+                    json.dumps(route_data['details']),
+                    route_data.get('day_of_week')
+                )
+            except asyncpg.exceptions.UniqueViolationError as e:
+                # Sequence can get out of sync if cleanup failed; realign and retry once
+                if getattr(e, "constraint_name", "") == "routes_pkey":
+                    print("⚠️ routes_route_id_seq out of sync; realigning and retrying insert")
+                    await self.reset_sequences()
+                    route_id = await self.conn.fetchval(
+                        query,
+                        route_data['date'],
+                        route_data['route_name'],
+                        json.dumps(route_data['details']),
+                        route_data.get('day_of_week')
+                    )
+                else:
+                    raise
         
         return route_id
     

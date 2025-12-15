@@ -5,6 +5,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 3000,
-    open: true
+    open: true,
+    allowedHosts: [
+      'localhost',
+      '.ngrok-free.dev' // allow ngrok tunnels (e.g., maile-detrusive-charlize.ngrok-free.dev)
+    ]
   }
 })

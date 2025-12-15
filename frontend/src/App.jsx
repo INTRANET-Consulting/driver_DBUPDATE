@@ -1,11 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Calendar, Upload, Users, MapPin, Clock, AlertCircle, CheckCircle, Edit2, Save, X, RefreshCw, Trash2, Plus, MessageCircle, FileSpreadsheet, Maximize2, Minimize2, Settings, ChevronLeft, ChevronRight, Truck, Navigation2, Shield, Bell, GripVertical, Sparkles, Bot, ListChecks } from 'lucide-react';
+﻿import React, { useState, useEffect, useRef } from 'react';
+import { Calendar, Upload, Users, MapPin, Clock, AlertCircle, CheckCircle, Edit2, Save, X, RefreshCw, Trash2, Plus, MessageCircle, FileSpreadsheet, Maximize2, Minimize2, Settings, ChevronLeft, ChevronRight, Truck, Navigation2, Shield, Bell, GripVertical, Sparkles, Bot, ListChecks, BarChart } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env?.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 const CHATBOT_URL = import.meta.env?.VITE_CHATBOT_URL || 'https://chat.bubbleexplorer.com/login';
 const SHEET_URL = import.meta.env?.VITE_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1eSjXF8_5GPyLr_spCQGcLU8Kx47XHcERlAUqROi8Hoc/edit?usp=sharing';
 const PLAN_ENDPOINT = import.meta.env?.VITE_PLAN_ENDPOINT || '';
 const NOTIFY_ENDPOINT = import.meta.env?.VITE_NOTIFICATION_ENDPOINT || 'http://localhost:8000/api/v1/notifications';
+const NOTIFY_RESPONSE_ENDPOINT = import.meta.env?.VITE_NOTIFICATION_RESPONSE_ENDPOINT || '';
+const REPLY_ENDPOINT = import.meta.env?.VITE_REPLY_ENDPOINT || 'http://localhost:4001/api/send-reply';
+const REPLY_PROXY_ENDPOINT = `${API_BASE_URL}/notifications/reply`;
+const ACCEPTED_NOTIFS_KEY = 'accepted_notifications_v1';
+const REJECTED_NOTIFS_KEY = 'rejected_notifications_v1';
 const APP_USERNAME = import.meta.env?.VITE_APP_USERNAME || '';
 const APP_PASSWORD = import.meta.env?.VITE_APP_PASSWORD || '';
 const API_KEY = import.meta.env?.VITE_API_KEY || '';
@@ -41,14 +46,14 @@ const DEFAULT_RULE_BLOCKS = [
   {
     id: 'weekly-limit',
     baseId: 'weekly-limit',
-    title: 'Weekly hours ≤ 48h',
+    title: 'Weekly hours Γëñ 48h',
     description: 'Matches max_weekly_hours in the optimizer so a driver never receives routes above 48 hours of work for the week.',
     tag: 'hours'
   },
   {
     id: 'consecutive-limit',
     baseId: 'consecutive-limit',
-    title: 'Consecutive hours ≤ 36h',
+    title: 'Consecutive hours Γëñ 36h',
     description: 'Uses max_consecutive_hours to stop stacking long days back-to-back. Protects safety and matches optimizer guard rails.',
     tag: 'fatigue'
   },
@@ -142,6 +147,15 @@ const DriverSchedulingSystem = () => {
   const [availability, setAvailability] = useState([]);
   const [fixedAssignments, setFixedAssignments] = useState([]);
   const [summary, setSummary] = useState(null);
+  const [planningResult, setPlanningResult] = useState(null);
+  const [planningLastRun, setPlanningLastRun] = useState(null);
+  const [plannerView, setPlannerView] = useState('rules');
+  const [showUnassignedBanner, setShowUnassignedBanner] = useState(false);
+  const [pendingPlannerScroll, setPendingPlannerScroll] = useState(null);
+  const unassignedSectionRef = useRef(null);
+  const fixedFailureSectionRef = useRef(null);
+  const [expandedUnassigned, setExpandedUnassigned] = useState({});
+  const [expandedFixedFailures, setExpandedFixedFailures] = useState({});
   
   const [editingDriver, setEditingDriver] = useState(null);
   const [editingRoute, setEditingRoute] = useState(null);
@@ -192,9 +206,53 @@ const DriverSchedulingSystem = () => {
   const [showPlanningPrompt, setShowPlanningPrompt] = useState(false);
   const [planningLoading, setPlanningLoading] = useState(false);
   const [notificationEndpoint, setNotificationEndpoint] = useState(NOTIFY_ENDPOINT);
+  const [notificationResponseEndpoint, setNotificationResponseEndpoint] = useState(NOTIFY_RESPONSE_ENDPOINT || NOTIFY_ENDPOINT);
   const [notificationLoading, setNotificationLoading] = useState(false);
   const [notifications, setNotifications] = useState([]);
-  const [rejectedNotifications, setRejectedNotifications] = useState([]);
+  const [pendingRejection, setPendingRejection] = useState(null);
+  const [pendingAccept, setPendingAccept] = useState(null);
+  const [acceptForm, setAcceptForm] = useState({ driverId: '', date: '', notes: '' });
+  const [pendingView, setPendingView] = useState(null);
+  const [rejectionMessage, setRejectionMessage] = useState('rejected');
+  const [acceptedNotifications, setAcceptedNotifications] = useState(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const stored = localStorage.getItem(ACCEPTED_NOTIFS_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [rejectedNotifications, setRejectedNotifications] = useState(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const stored = localStorage.getItem(REJECTED_NOTIFS_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [notificationPollingEnabled, setNotificationPollingEnabled] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      const stored = localStorage.getItem('notif_poll_enabled');
+      return stored ? stored === '1' : true;
+    } catch {
+      return true;
+    }
+  });
+  const [showNotifSettings, setShowNotifSettings] = useState(false);
+  const [draftPollingEnabled, setDraftPollingEnabled] = useState(true);
+  const [draftPollingInterval, setDraftPollingInterval] = useState(20000);
+  const [notificationPollingInterval, setNotificationPollingInterval] = useState(() => {
+    if (typeof window === 'undefined') return 20000;
+    try {
+      const stored = localStorage.getItem('notif_poll_interval');
+      return stored ? parseInt(stored, 10) || 20000 : 20000;
+    } catch {
+      return 20000;
+    }
+  });
   const [ruleBlocks, setRuleBlocks] = useState(DEFAULT_RULE_BLOCKS);
   const [ruleLibrary, setRuleLibrary] = useState(RULE_LIBRARY);
   const [draggingRuleId, setDraggingRuleId] = useState(null);
@@ -205,6 +263,8 @@ const DriverSchedulingSystem = () => {
   const [ruleChatbotPos, setRuleChatbotPos] = useState({ x: 24, y: 72 });
   const [ruleChatbotSize, setRuleChatbotSize] = useState({ width: 420, height: 560 });
   const chatbotDragRef = useRef({ mode: null, startX: 0, startY: 0, startPos: null, startSize: null });
+  const audioContextRef = useRef(null);
+  const [soundUnlocked, setSoundUnlocked] = useState(false);
 
   useEffect(() => {
     try {
@@ -254,6 +314,59 @@ const DriverSchedulingSystem = () => {
       console.error('Failed to persist rules', error);
     }
   }, [ruleBlocks]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACCEPTED_NOTIFS_KEY, JSON.stringify(acceptedNotifications));
+    } catch (error) {
+      console.error('Failed to persist accepted notifications', error);
+    }
+  }, [acceptedNotifications]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(REJECTED_NOTIFS_KEY, JSON.stringify(rejectedNotifications));
+    } catch (error) {
+      console.error('Failed to persist rejected notifications', error);
+    }
+  }, [rejectedNotifications]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('notif_poll_enabled', notificationPollingEnabled ? '1' : '0');
+      localStorage.setItem('notif_poll_interval', String(notificationPollingInterval));
+    } catch (error) {
+      console.error('Failed to persist notification polling settings', error);
+    }
+  }, [notificationPollingEnabled, notificationPollingInterval]);
+
+  useEffect(() => {
+    if (showNotifSettings) {
+      setDraftPollingEnabled(notificationPollingEnabled);
+      setDraftPollingInterval(notificationPollingInterval);
+    }
+  }, [showNotifSettings]);
+
+  useEffect(() => {
+    if (pendingPlannerScroll && activeTab === 'planner') {
+      if (pendingPlannerScroll && pendingPlannerScroll !== 'rules' && plannerView !== 'report') {
+        setPlannerView('report');
+        return;
+      }
+      const scrollTarget =
+        pendingPlannerScroll === 'unassigned'
+          ? unassignedSectionRef
+          : pendingPlannerScroll === 'fixed'
+            ? fixedFailureSectionRef
+            : null;
+      setTimeout(() => {
+        if (scrollTarget?.current) {
+          scrollTarget.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 120);
+      setPendingPlannerScroll(null);
+    }
+  }, [pendingPlannerScroll, activeTab, plannerView]);
 
   useEffect(() => {
     try {
@@ -369,7 +482,7 @@ const DriverSchedulingSystem = () => {
       } else {
         setMessage({
           type: 'success',
-          text: `✅ Upload successful! Created ${data.records_created.drivers} drivers, ${data.records_created.routes} routes, ${data.records_created.fixed_assignments} fixed assignments.`
+          text: `Γ£à Upload successful! Created ${data.records_created.drivers} drivers, ${data.records_created.routes} routes, ${data.records_created.fixed_assignments} fixed assignments.`
         });
 
         await fetchWeeklyData(weekStart);
@@ -391,19 +504,31 @@ const DriverSchedulingSystem = () => {
       setMessage({ type: 'error', text: 'Planning endpoint is missing. Set it in the Planner tab input (persisted in your browser).' });
       return;
     }
-      setPlanningLoading(true);
-      try {
-        const response = await fetch(planEndpoint, {
-          method: 'POST',
-          headers: jsonHeaders(),
-          body: JSON.stringify({ week_start: weekStart })
-        });
+    setPlanningLoading(true);
+    try {
+      const response = await fetch(planEndpoint, {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ week_start: weekStart })
+      });
+      const data = await response.json().catch(() => null);
       if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || 'Failed to send planning request');
+        throw new Error((data && (data.detail || data.error)) || 'Failed to send planning request');
       }
-      setMessage({ type: 'success', text: 'Planning request sent successfully.' });
+      setPlanningResult(data || null);
+      setPlanningLastRun(new Date().toISOString());
+      const grouped = groupUnassignedByDate(data || {});
+      const groupedFixed = groupFixedFailuresByDate(data || {});
+      const unassignedCount = countUnassigned(grouped);
+      const fixedFailCount = countFixedFailures(groupedFixed);
+      const statusNote = data?.solver_status ? ` (solver: ${data.solver_status})` : '';
+      const unassignedNote = unassignedCount > 0 ? ` · ${unassignedCount} unassigned route${unassignedCount === 1 ? '' : 's'} to review` : ' · all routes covered';
+      const fixedNote = fixedFailCount > 0 ? ` · ${fixedFailCount} fixed assignment issue${fixedFailCount === 1 ? '' : 's'}` : '';
+      setShowUnassignedBanner(unassignedCount > 0 || fixedFailCount > 0);
+      setMessage({ type: 'success', text: `Planning request sent successfully${statusNote}${unassignedNote}${fixedNote}.` });
     } catch (error) {
+      setPlanningResult(null);
+      setShowUnassignedBanner(false);
       setMessage({ type: 'error', text: error.message });
     } finally {
       setPlanningLoading(false);
@@ -527,11 +652,90 @@ const DriverSchedulingSystem = () => {
       }
       const data = await response.json();
       const items = Array.isArray(data) ? data : data.notifications || [];
-      setNotifications(items);
+      const pending = items
+        .map((item) => ({
+          ...item,
+          actual_message: item.actual_message || item.Actual_message || item.message || item.reason
+        }))
+        .filter((n) => n.driver_name || n.reason || n.actual_message || n.whatsapp_from);
+      setNotifications(pending);
+      if (pending.length > notifications.length) {
+        playNotificationTone();
+      }
     } catch (error) {
       setMessage({ type: 'error', text: error.message });
     } finally {
       setNotificationLoading(false);
+    }
+  };
+
+  const sendNotificationResponse = async (notif, status, message) => {
+    if (!notificationResponseEndpoint) return;
+    const payload = {
+      id: notif.id,
+      driver_name: notif.driver_name,
+      date: notif.date,
+      status,
+      message: message || status
+    };
+    const response = await fetch(notificationResponseEndpoint, {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || 'Failed to send response');
+    }
+  };
+
+  const sendWhatsAppReply = async (notif, reply) => {
+    if (!notif?.whatsapp_from) return { ok: false, skipped: true };
+    const endpoint = REPLY_PROXY_ENDPOINT || REPLY_ENDPOINT;
+    if (!endpoint) return { ok: false, skipped: true };
+    try {
+      const to = notif.whatsapp_from.startsWith('whatsapp:') ? notif.whatsapp_from : `whatsapp:${notif.whatsapp_from}`;
+      const body = { to, reply };
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        return { ok: false, error: error.detail || `Reply endpoint returned ${response.status}` };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message || 'Failed to send WhatsApp reply (possibly CORS or network)' };
+    }
+  };
+
+  const playNotificationTone = async () => {
+    if (typeof window === 'undefined') return;
+    try {
+      const ctx = audioContextRef.current || new (window.AudioContext || window.webkitAudioContext)();
+      audioContextRef.current = ctx;
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = 880;
+      const now = ctx.currentTime;
+      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.22);
+    } catch (e) {
+      try {
+        const beep = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YQAAAAA=');
+        beep.play().catch(() => {});
+      } catch (err) {
+        console.warn('Notification tone failed', e);
+      }
     }
   };
 
@@ -553,7 +757,7 @@ const DriverSchedulingSystem = () => {
       }
       setMessage({ type: 'success', text: accept ? 'Notification sent and accepted.' : 'Notification sent.' });
       if (accept && weekStart && validateMonday(weekStart)) {
-        fetchWeeklyData(weekStart);
+        fetchWeeklyData(weekStart, true);
       }
     } catch (error) {
       setMessage({ type: 'error', text: error.message });
@@ -563,18 +767,98 @@ const DriverSchedulingSystem = () => {
   };
 
   const acceptNotification = async (notif) => {
-    const driver = drivers.find(d => d.name.toLowerCase() === notif.driver_name.toLowerCase());
-    if (!driver) {
-      setMessage({ type: 'error', text: `Driver "${notif.driver_name}" not found.` });
-      return;
-    }
+    const driver = drivers.find(
+      (d) => notif.driver_name && d.name.toLowerCase() === notif.driver_name.toLowerCase()
+    );
+    setPendingAccept(notif);
+    setAcceptForm({
+      driverId: driver?.driver_id || '',
+      date: notif.date || '',
+      notes: notif.reason || notif.message || 'Unavailable request'
+    });
+  };
+
+  const rejectNotification = (notif) => {
+    setPendingRejection(notif);
+    setRejectionMessage(notif.reason || notif.message || 'rejected');
+  };
+
+  const handleRejectionDecision = async (sendResponse) => {
+    if (!pendingRejection) return;
+    const notif = pendingRejection;
     setNotificationLoading(true);
     try {
+        if (sendResponse) {
+          await sendNotificationResponse(notif, 'rejected', rejectionMessage || 'rejected');
+          const waResult = await sendWhatsAppReply(notif, rejectionMessage || 'rejected');
+          if (waResult?.error) {
+            setMessage({ type: 'error', text: `Rejection saved but WhatsApp reply failed: ${waResult.error}` });
+          } else {
+            setMessage({ type: 'success', text: 'Notification rejected and reply sent' });
+          }
+        }
+        setNotifications((prev) =>
+          prev
+            .map((n) => {
+              if ((notif.id && n.id === notif.id) || (!notif.id && n === notif)) {
+                return { ...n, status: 'rejected', responseMessage: sendResponse ? (rejectionMessage || 'rejected') : n.responseMessage };
+              }
+              return n;
+            })
+            .filter((n) => n.status !== 'pending')
+        );
+      if (notif?.id) {
+        try {
+          await fetch(`${notificationEndpoint}/${notif.id}`, { method: 'DELETE', headers: withApiKey() });
+        } catch {
+          /* ignore */
+        }
+      }
+      // remove any pending duplicates for same driver/date
+      setNotifications((prev) =>
+        prev.filter(
+          (n) =>
+            n.id !== notif?.id &&
+            !(n.driver_name === notif?.driver_name && n.date === notif?.date && (n.status || 'pending') === 'pending')
+        )
+      );
+      if (!sendResponse) {
+        setMessage({ type: 'success', text: 'Notification rejected' });
+      }
+      setRejectedNotifications((prev) => [
+        ...prev,
+        {
+          id: notif?.id,
+          driver_name: notif?.driver_name,
+          date: notif?.date,
+          reason: notif?.reason,
+          actual_message: notif?.actual_message,
+          whatsapp_from: notif?.whatsapp_from,
+          responseMessage: sendResponse ? (rejectionMessage || 'rejected') : undefined
+        }
+      ]);
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    } finally {
+      setPendingRejection(null);
+      setNotificationLoading(false);
+    }
+  };
+
+  const handleAcceptConfirm = async () => {
+    if (!acceptForm.driverId || !acceptForm.date) {
+      setMessage({ type: 'error', text: 'Driver and date are required.' });
+      return;
+    }
+    const notif = pendingAccept;
+    setNotificationLoading(true);
+    try {
+      const driver = drivers.find((d) => d.driver_id === acceptForm.driverId);
       const payload = {
-        driver_id: driver.driver_id,
-        date: notif.date,
+        driver_id: acceptForm.driverId,
+        date: acceptForm.date,
         available: false,
-        notes: notif.reason || notif.message || 'Unavailable request'
+        notes: acceptForm.notes || 'Unavailable request'
       };
       const response = await fetch(`${API_BASE_URL}/weekly/availability`, {
         method: 'POST',
@@ -586,20 +870,64 @@ const DriverSchedulingSystem = () => {
         throw new Error(error.detail || 'Failed to update availability');
       }
       const data = await response.json();
-      const driverName = driver.name;
-      setAvailability(prev => [...prev, { ...data, driver_name: driverName }]);
-      setNotifications(prev => prev.filter(n => n !== notif));
-      setMessage({ type: 'success', text: `Marked ${driverName} unavailable on ${notif.date}` });
+      const driverName = driver?.name || notif?.driver_name || 'Driver';
+      setAvailability((prev) => [...prev, { ...data, driver_name: driverName }]);
+      try {
+        await sendNotificationResponse(notif, 'approved', 'approved');
+      } catch (err) {
+        setMessage({ type: 'error', text: `Availability updated but response failed: ${err.message}` });
+      }
+      try {
+        const waResult = await sendWhatsAppReply(notif, acceptForm.notes || 'approved');
+        if (waResult?.error) {
+          setMessage({ type: 'error', text: `Availability updated but reply failed: ${waResult.error}` });
+        }
+      } catch {
+        /* ignore */
+      }
+      setNotifications((prev) =>
+        prev
+          .map((n) => {
+            if ((notif?.id && n.id === notif.id) || (!notif?.id && n === notif)) {
+              return { ...n, status: 'accepted', responseMessage: 'approved', driver_name: driverName };
+            }
+            return n;
+          })
+          .filter((n) => n.status !== 'pending')
+      );
+      if (notif?.id) {
+        try {
+          await fetch(`${notificationEndpoint}/${notif.id}`, { method: 'DELETE', headers: withApiKey() });
+        } catch {
+          /* ignore */
+        }
+      }
+      setNotifications((prev) =>
+        prev.filter(
+          (n) =>
+            n.id !== notif?.id &&
+            !(n.driver_name === notif?.driver_name && n.date === notif?.date && (n.status || 'pending') === 'pending')
+        )
+      );
+      setMessage({ type: 'success', text: `Marked ${driverName} unavailable on ${acceptForm.date}` });
+      setAcceptedNotifications((prev) => [
+        ...prev,
+        {
+          id: notif?.id,
+          driver_name: driverName,
+          date: acceptForm.date,
+          reason: notif?.reason,
+          actual_message: notif?.actual_message,
+          whatsapp_from: notif?.whatsapp_from,
+          responseMessage: 'approved'
+        }
+      ]);
+      setPendingAccept(null);
     } catch (error) {
       setMessage({ type: 'error', text: error.message });
     } finally {
       setNotificationLoading(false);
     }
-  };
-
-  const rejectNotification = (notif) => {
-    setNotifications(prev => prev.filter(n => n !== notif));
-    setRejectedNotifications(prev => [...prev, notif]);
   };
 
   const deleteNotification = async (notif) => {
@@ -619,7 +947,40 @@ const DriverSchedulingSystem = () => {
     }
   }, [activeTab]);
 
-  const fetchWeeklyData = async (date) => {
+  useEffect(() => {
+    if (!authed || !notificationEndpoint || !notificationPollingEnabled) return;
+    fetchNotifications();
+    const id = setInterval(() => {
+      fetchNotifications();
+    }, notificationPollingInterval);
+    return () => clearInterval(id);
+  }, [authed, notificationEndpoint, notificationPollingEnabled, notificationPollingInterval]);
+
+  useEffect(() => {
+    const unlock = () => {
+      try {
+        const ctx = audioContextRef.current || new (window.AudioContext || window.webkitAudioContext)();
+        audioContextRef.current = ctx;
+        if (ctx.state === 'suspended') {
+          ctx.resume();
+        }
+        setSoundUnlocked(true);
+      } catch (err) {
+        console.warn('Audio unlock failed', err);
+      }
+      window.removeEventListener('click', unlock);
+    };
+    window.addEventListener('click', unlock);
+    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('keydown', unlock);
+    return () => {
+      window.removeEventListener('click', unlock);
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, []);
+
+  const fetchWeeklyData = async (date, quiet = false) => {
     if (!date || !validateMonday(date)) return;
     
     setLoading(true);
@@ -646,7 +1007,9 @@ const DriverSchedulingSystem = () => {
       setFixedAssignments(assignData.fixed_assignments || []);
       setSummary(summaryData);
       
-      setMessage({ type: 'success', text: 'Data loaded successfully' });
+      if (!quiet) {
+        setMessage({ type: 'success', text: 'Data loaded successfully' });
+      }
       return true;
     } catch (error) {
       setMessage({ type: 'error', text: 'Failed to load data: ' + error.message });
@@ -654,6 +1017,116 @@ const DriverSchedulingSystem = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const formatDurationHours = (hours) => {
+    if (hours === null || hours === undefined || Number.isNaN(Number(hours))) return '—';
+    const totalMinutes = Math.round(Number(hours) * 60);
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  };
+
+  const dayLabel = (dateStr) => {
+    if (!dateStr) return 'Unknown day';
+    const d = new Date(dateStr);
+    const weekday = d.toLocaleDateString('en-US', { weekday: 'long' });
+    return `${weekday} · ${dateStr}`;
+  };
+
+  const groupUnassignedByDate = (result) => {
+    const grouped = {};
+    if (!result) return grouped;
+    const seen = new Set();
+
+    const addItem = (dateKey, item) => {
+      const routeName = item.route_name || item.name || item.route || 'Unknown route';
+      const routeId = item.route_id || item.id || null;
+      const duration = item.duration_hours;
+      const key = `${dateKey}|${routeId || 'no-id'}|${routeName}|${duration || 'no-duration'}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (!grouped[dateKey]) grouped[dateKey] = [];
+      grouped[dateKey].push({
+        route_name: routeName,
+        route_id: routeId,
+        date: item.date || dateKey,
+        duration_hours: duration,
+        reason: item.reason || item.message || 'No reason provided'
+      });
+    };
+
+    if (result.daily_reports && typeof result.daily_reports === 'object') {
+      Object.values(result.daily_reports).forEach((report) => {
+        const list = report?.unassigned_details || report?.unassigned_routes || [];
+        if (Array.isArray(list) && list.length > 0) {
+          list.forEach((item) => addItem(report.date, item));
+        }
+      });
+    }
+
+    if (Array.isArray(result.unassigned_routes)) {
+      result.unassigned_routes.forEach((item) => {
+        const dateKey = item.date || 'Unknown date';
+        addItem(dateKey, item);
+      });
+    }
+
+    return grouped;
+  };
+
+  const countUnassigned = (grouped) =>
+    Object.values(grouped || {}).reduce((acc, list) => acc + (Array.isArray(list) ? list.length : 0), 0);
+
+  const groupFixedFailuresByDate = (result) => {
+    const grouped = {};
+    if (!result || !result.daily_reports) return grouped;
+    const seen = new Set();
+
+    Object.values(result.daily_reports).forEach((report) => {
+      const list = report?.fixed_assignment_failures || [];
+      if (!Array.isArray(list)) return;
+      list.forEach((item) => {
+        const dateKey = item.date || report.date || 'Unknown date';
+        const routeName = item.route_name || item.name || item.route || 'Unknown route';
+        const routeId = item.route_id || item.id || null;
+        const driverId = item.driver_id || item.driver || null;
+        const key = `${dateKey}|${routeId || 'no-id'}|${routeName}|${driverId || 'no-driver'}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        if (!grouped[dateKey]) grouped[dateKey] = [];
+        grouped[dateKey].push({
+          route_name: routeName,
+          route_id: routeId,
+          driver_id: driverId,
+          date: dateKey,
+          reason: item.reason || item.message || 'No reason provided'
+        });
+      });
+    });
+
+    return grouped;
+  };
+
+  const countFixedFailures = (grouped) =>
+    Object.values(grouped || {}).reduce((acc, list) => acc + (Array.isArray(list) ? list.length : 0), 0);
+
+  const buildReasonCounts = (unassignedByDate, fixedByDate) => {
+    const counts = {};
+    const addReason = (reason) => {
+      if (!reason) return;
+      const key = reason.trim();
+      counts[key] = (counts[key] || 0) + 1;
+    };
+    Object.values(unassignedByDate || {}).forEach((list) => {
+      list.forEach((item) => addReason(item.reason));
+    });
+    Object.values(fixedByDate || {}).forEach((list) => {
+      list.forEach((item) => addReason(item.reason));
+    });
+    return Object.entries(counts)
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count);
   };
 
   const toNullIfEmpty = (value) => {
@@ -767,6 +1240,44 @@ const DriverSchedulingSystem = () => {
             <X size={14} />
           </button>
         </div>
+      </div>
+    );
+  };
+
+  const UnassignedWarningBanner = () => {
+    if (!showUnassignedBanner) return null;
+    return (
+      <div
+        style={{
+          margin: '12px 0',
+          padding: '14px 16px',
+          borderRadius: '10px',
+          background: '#fef3c7',
+          border: '1px solid #fcd34d',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: '10px'
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#92400e' }}>
+          <AlertCircle size={18} />
+          <div>
+            <p style={{ margin: 0, fontWeight: 700 }}>Optimizer returned unassigned routes or fixed assignment issues.</p>
+            <p style={{ margin: '4px 0 0', color: '#92400e' }}>Click to review the day-by-day breakdown.</p>
+          </div>
+        </div>
+        <button
+          className="primary-button"
+          onClick={() => {
+            setActiveTab('planner');
+            setPlannerView('report');
+            setPendingPlannerScroll('unassigned');
+          }}
+          style={{ background: '#f59e0b', borderColor: '#d97706' }}
+        >
+          View details
+        </button>
       </div>
     );
   };
@@ -1773,7 +2284,7 @@ const DriverSchedulingSystem = () => {
             <input
               type="number"
               step="0.1"
-              placeholder="Diäten"
+              placeholder="Di├ñten"
               value={newRoute.diaten}
               onChange={(e) => setNewRoute({ ...newRoute, diaten: e.target.value })}
               style={{ width: '140px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px' }}
@@ -2374,8 +2885,17 @@ const DriverSchedulingSystem = () => {
     </div>
   );
 
-  const renderPlannerTab = () => (
-    <div className="panel" style={{ maxWidth: '1200px' }}>
+  const renderPlannerTab = () => {
+    const unassignedByDate = groupUnassignedByDate(planningResult);
+    const totalUnassigned = countUnassigned(unassignedByDate);
+    const fixedFailuresByDate = groupFixedFailuresByDate(planningResult);
+    const totalFixedFailures = countFixedFailures(fixedFailuresByDate);
+    const hasPlannerResult = !!planningResult;
+    const reasonStats = buildReasonCounts(unassignedByDate, fixedFailuresByDate);
+    const maxReasonCount = reasonStats.length > 0 ? Math.max(...reasonStats.map((r) => r.count)) : 1;
+
+    return (
+      <div className="panel" style={{ maxWidth: '1200px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <ListChecks size={20} />
@@ -2388,7 +2908,7 @@ const DriverSchedulingSystem = () => {
             Reset defaults
           </button>
           <button className="primary-button" onClick={triggerPlanning} disabled={planningLoading} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            {planningLoading ? 'Sending…' : 'Send planning'}
+            {planningLoading ? 'SendingΓÇª' : 'Send planning'}
           </button>
         </div>
       </div>
@@ -2396,6 +2916,25 @@ const DriverSchedulingSystem = () => {
         Visualize the optimizer constraints as editable blocks. Reorder to show intent, add new rules, and capture notes from the Bubble chatbot alongside the planning endpoint.
       </p>
 
+      <div style={{ display: 'inline-flex', gap: '8px', marginBottom: '14px' }}>
+        <button
+          className={`tab-button ${plannerView === 'rules' ? 'active' : ''}`}
+          onClick={() => setPlannerView('rules')}
+          style={{ padding: '8px 12px' }}
+        >
+          Rules & Endpoint
+        </button>
+        <button
+          className={`tab-button ${plannerView === 'report' ? 'active' : ''}`}
+          onClick={() => setPlannerView('report')}
+          style={{ padding: '8px 12px' }}
+        >
+          Planner Report
+        </button>
+      </div>
+
+      {plannerView === 'rules' && (
+      <>
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 7fr) minmax(320px, 4fr)', gap: '16px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div className="panel-compact" style={{ border: '1px solid #e2e8f0', background: '#f8fafc' }}>
@@ -2426,7 +2965,7 @@ const DriverSchedulingSystem = () => {
                   Add sample: {rule.title}
                 </button>
               ))}
-              <span className="pill" style={{ color: '#0f172a' }}>Samples—ask chatbot for more</span>
+              <span className="pill" style={{ color: '#0f172a' }}>SamplesΓÇöask chatbot for more</span>
             </div>
 
             {showRuleComposer && (
@@ -2583,13 +3122,13 @@ Content-Type: application/json
             )}
             {showRuleChatbot && ruleChatbotExpanded && (
               <div className="panel-compact" style={{ border: '1px dashed #cbd5e1', marginTop: '8px', background: '#fff' }}>
-                <p style={{ color: '#475569', margin: 0 }}>Floating window is open on the right. Click “Dock” to bring it back here.</p>
+                <p style={{ color: '#475569', margin: 0 }}>Floating window is open on the right. Click ΓÇ£DockΓÇ¥ to bring it back here.</p>
               </div>
             )}
           </div>
         </div>
       </div>
-      {showRuleChatbot && ruleChatbotExpanded && (
+      {plannerView === 'rules' && showRuleChatbot && ruleChatbotExpanded && (
         <div
           style={{
             position: 'fixed',
@@ -2640,8 +3179,349 @@ Content-Type: application/json
           </div>
         </div>
       )}
+      </>
+      )}
+
+      {plannerView === 'report' && (
+      <>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px', marginBottom: '12px' }}>
+        <div
+          className="panel-compact"
+          style={{ border: '1px solid #e2e8f0', background: '#f8fafc', cursor: 'pointer' }}
+          onClick={() => { setActiveTab('planner'); setPlannerView('report'); setPendingPlannerScroll('unassigned'); }}
+        >
+          <p style={{ margin: 0, color: '#475569' }}>Unassigned routes</p>
+          <h3 style={{ margin: '4px 0', color: totalUnassigned > 0 ? '#b91c1c' : '#0f172a' }}>
+            {hasPlannerResult ? totalUnassigned : '—'}
+          </h3>
+          <p style={{ margin: 0, color: '#475569', fontSize: '13px' }}>From optimizer output</p>
+        </div>
+        <div
+          className="panel-compact"
+          style={{ border: '1px solid #e2e8f0', background: '#f8fafc', cursor: 'pointer' }}
+          onClick={() => { setActiveTab('planner'); setPlannerView('report'); setPendingPlannerScroll('fixed'); }}
+        >
+          <p style={{ margin: 0, color: '#475569' }}>Fixed assignment failures</p>
+          <h3 style={{ margin: '4px 0', color: totalFixedFailures > 0 ? '#b91c1c' : '#0f172a' }}>
+            {hasPlannerResult ? totalFixedFailures : '—'}
+          </h3>
+          <p style={{ margin: 0, color: '#475569', fontSize: '13px' }}>Drivers that could not be locked</p>
+        </div>
+        <div className="panel-compact" style={{ border: '1px solid #e2e8f0', background: '#f8fafc' }}>
+          <p style={{ margin: 0, color: '#475569' }}>Solver status</p>
+          <h3 style={{ margin: '4px 0', color: '#0f172a' }}>
+            {hasPlannerResult ? (planningResult?.solver_status || 'Unknown') : '—'}
+          </h3>
+          <p style={{ margin: 0, color: '#475569', fontSize: '13px' }}>
+            {planningLastRun ? `Updated ${new Date(planningLastRun).toLocaleString()}` : 'Run planning to populate'}
+          </p>
+        </div>
+        <div className="panel-compact" style={{ border: '1px solid #e2e8f0', background: '#f8fafc' }}>
+          <p style={{ margin: 0, color: '#475569' }}>Week start</p>
+          <h3 style={{ margin: '4px 0', color: '#0f172a' }}>
+            {hasPlannerResult ? (planningResult?.week_start || weekStart || '—') : (weekStart || '—')}
+          </h3>
+          <p style={{ margin: 0, color: '#475569', fontSize: '13px' }}>Planner request scope</p>
+        </div>
+      </div>
+
+      {hasPlannerResult && reasonStats.length > 0 && (
+        <div className="panel-compact" style={{ border: '1px solid #e2e8f0', background: '#fff', marginBottom: '14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+            <BarChart size={16} />
+            <h4 style={{ margin: 0 }}>Top blocker reasons</h4>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {reasonStats.map((r) => (
+              <div key={r.reason}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#0f172a', fontSize: '14px' }}>
+                  <span style={{ maxWidth: '70%' }}>{r.reason}</span>
+                  <span style={{ color: '#475569' }}>{r.count}</span>
+                </div>
+                <div style={{ height: '6px', background: '#e2e8f0', borderRadius: '6px', overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${Math.max(8, (r.count / maxReasonCount) * 100)}%`,
+                      background: '#fb923c',
+                      height: '100%'
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '10px', marginBottom: '14px' }}>
+        <div className="panel-compact" style={{ border: '1px solid #e2e8f0', background: '#fff' }}>
+          <h4 style={{ margin: '0 0 8px', color: '#0f172a' }}>Assignment coverage</h4>
+          <div style={{ marginBottom: '8px', color: '#475569', fontSize: '14px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ width: '10px', height: '10px', background: '#22c55e', borderRadius: '4px', display: 'inline-block' }} />
+              Assigned: {hasPlannerResult ? (planningResult?.total_assignments ?? Math.max(0, (planningResult?.total_routes || 0) - totalUnassigned)) : '—'}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ width: '10px', height: '10px', background: '#ef4444', borderRadius: '4px', display: 'inline-block' }} />
+              Unassigned: {hasPlannerResult ? totalUnassigned : '—'}
+            </div>
+          </div>
+          <div style={{ height: '18px', background: '#e2e8f0', borderRadius: '8px', overflow: 'hidden' }}>
+            {hasPlannerResult ? (
+              <div style={{ display: 'flex', height: '100%' }}>
+                <div
+                  style={{
+                    width: `${Math.min(100, planningResult?.total_routes ? ((planningResult?.total_assignments ?? Math.max(0, planningResult.total_routes - totalUnassigned)) / planningResult.total_routes) * 100 : 0)}%`,
+                    background: '#22c55e',
+                    transition: 'width 0.2s ease'
+                  }}
+                />
+                <div
+                  style={{
+                    width: `${Math.min(100, planningResult?.total_routes ? (totalUnassigned / planningResult.total_routes) * 100 : 0)}%`,
+                    background: '#ef4444',
+                    transition: 'width 0.2s ease'
+                  }}
+                />
+              </div>
+            ) : (
+              <div style={{ width: '100%', height: '100%', background: '#e2e8f0' }} />
+            )}
+          </div>
+        </div>
+        <div className="panel-compact" style={{ border: '1px solid #e2e8f0', background: '#fff' }}>
+          <h4 style={{ margin: '0 0 8px', color: '#0f172a' }}>Fixed assignment issues by day</h4>
+          {hasPlannerResult && totalFixedFailures > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {Object.keys(fixedFailuresByDate).sort().map((dateKey) => {
+                const count = fixedFailuresByDate[dateKey].length;
+                const maxCount = Math.max(...Object.values(fixedFailuresByDate).map((list) => list.length));
+                return (
+                  <div key={dateKey}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#0f172a', fontSize: '13px' }}>
+                      <span>{dateKey}</span>
+                      <span style={{ color: '#b91c1c' }}>{count}</span>
+                    </div>
+                    <div style={{ height: '10px', background: '#fee2e2', borderRadius: '6px', overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          width: `${Math.max(10, (count / (maxCount || 1)) * 100)}%`,
+                          background: '#ef4444',
+                          height: '100%'
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p style={{ margin: 0, color: '#475569', fontSize: '14px' }}>No fixed assignment failures yet.</p>
+          )}
+        </div>
+      </div>
+
+      <div style={{ marginTop: '16px' }}>
+        <div ref={unassignedSectionRef} className="panel-compact" style={{ border: '1px solid #e2e8f0', background: '#f8fafc' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Navigation2 size={18} />
+              <h4 style={{ margin: 0 }}>Unassigned routes (optimizer)</h4>
+            </div>
+            {hasPlannerResult && (
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', color: '#0f172a', fontSize: '13px' }}>
+                {planningResult?.solver_status && (
+                  <span className="pill" style={{ background: '#e0f2fe', color: '#0f172a' }}>
+                    Solver: {planningResult.solver_status}
+                  </span>
+                )}
+                {planningResult?.week_start && (
+                  <span className="pill" style={{ background: '#eef2ff', color: '#312e81' }}>
+                    Week: {planningResult.week_start}
+                  </span>
+                )}
+                {planningLastRun && (
+                  <span className="pill" style={{ background: '#f1f5f9', color: '#0f172a' }}>
+                    Updated: {new Date(planningLastRun).toLocaleString()}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+          <p style={{ color: '#475569', margin: '6px 0 12px' }}>
+            Routes the optimizer could not assign, grouped by day. This block is separate from the rule board so existing planner controls stay unchanged.
+          </p>
+
+          {!hasPlannerResult && (
+            <div style={{ padding: '12px', border: '1px dashed #cbd5e1', borderRadius: '10px', background: '#fff' }}>
+              <p style={{ color: '#475569', margin: 0 }}>Send a planning request to pull unassigned routes from the optimizer.</p>
+            </div>
+          )}
+
+          {hasPlannerResult && totalUnassigned === 0 && (
+            <div style={{ padding: '12px', border: '1px solid #e5e7eb', borderRadius: '10px', background: '#ecfdf3' }}>
+              <p style={{ margin: 0, color: '#166534', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <CheckCircle size={16} />
+                All routes assigned. No unassigned items reported by the optimizer.
+              </p>
+            </div>
+          )}
+
+          {hasPlannerResult && totalUnassigned > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '10px' }}>
+              {Object.keys(unassignedByDate).sort().map((dateKey) => (
+                <div key={dateKey} className="panel-compact" style={{ border: '1px solid #e5e7eb', background: '#fff' }}>
+                  <div
+                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '8px', cursor: 'pointer' }}
+                    onClick={() => setExpandedUnassigned((prev) => ({ ...prev, [dateKey]: !prev[dateKey] }))}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Calendar size={16} />
+                      <strong style={{ color: '#0f172a' }}>{dayLabel(dateKey)}</strong>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span className="pill" style={{ background: '#fef3c7', color: '#92400e' }}>
+                        {unassignedByDate[dateKey].length} unassigned
+                      </span>
+                      <ChevronRight
+                        size={16}
+                        style={{
+                          transform: expandedUnassigned[dateKey] === false ? 'rotate(90deg)' : 'rotate(0deg)',
+                          transition: 'transform 0.12s ease'
+                        }}
+                      />
+                    </div>
+                  </div>
+                  {expandedUnassigned[dateKey] !== false && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {unassignedByDate[dateKey].map((route, idx) => (
+                        <div key={`${dateKey}-${idx}`} style={{ border: '1px solid #e2e8f0', borderRadius: '10px', padding: '10px', background: '#f8fafc' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <Truck size={16} />
+                              <span style={{ fontWeight: 700, color: '#0f172a' }}>{route.route_name}</span>
+                            </div>
+                            {route.route_id && (
+                              <span className="pill" style={{ background: '#e2e8f0', color: '#0f172a' }}>ID: {route.route_id}</span>
+                            )}
+                          </div>
+                          <div style={{ marginTop: '6px', color: '#475569', fontSize: '14px' }}>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' }}>
+                              <Clock size={14} />
+                              <span>{formatDurationHours(route.duration_hours)} hrs</span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                              <AlertCircle size={14} color="#b91c1c" style={{ marginTop: '2px' }} />
+                              <span style={{ color: '#b91c1c' }}>{route.reason}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ marginTop: '12px' }}>
+        <div ref={fixedFailureSectionRef} className="panel-compact" style={{ border: '1px solid #e2e8f0', background: '#f8fafc' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Shield size={18} />
+              <h4 style={{ margin: 0 }}>Fixed assignment failures</h4>
+            </div>
+            {hasPlannerResult && (
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', color: '#0f172a', fontSize: '13px' }}>
+                <span className="pill" style={{ background: '#e2e8f0', color: '#0f172a' }}>{totalFixedFailures} issues</span>
+              </div>
+            )}
+          </div>
+          <p style={{ color: '#475569', margin: '6px 0 12px' }}>
+            Driver/route pairs the optimizer could not lock due to constraints. Click a day to expand details.
+          </p>
+
+          {!hasPlannerResult && (
+            <div style={{ padding: '12px', border: '1px dashed #cbd5e1', borderRadius: '10px', background: '#fff' }}>
+              <p style={{ color: '#475569', margin: 0 }}>Run planning to see fixed assignment issues.</p>
+            </div>
+          )}
+
+          {hasPlannerResult && totalFixedFailures === 0 && (
+            <div style={{ padding: '12px', border: '1px solid #e5e7eb', borderRadius: '10px', background: '#ecfdf3' }}>
+              <p style={{ margin: 0, color: '#166534', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <CheckCircle size={16} />
+                All fixed assignments honored. No failures reported.
+              </p>
+            </div>
+          )}
+
+          {hasPlannerResult && totalFixedFailures > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '10px' }}>
+              {Object.keys(fixedFailuresByDate).sort().map((dateKey) => (
+                <div key={dateKey} className="panel-compact" style={{ border: '1px solid #e5e7eb', background: '#fff' }}>
+                  <div
+                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '8px', cursor: 'pointer' }}
+                    onClick={() => setExpandedFixedFailures((prev) => ({ ...prev, [dateKey]: !prev[dateKey] }))}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Calendar size={16} />
+                      <strong style={{ color: '#0f172a' }}>{dayLabel(dateKey)}</strong>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span className="pill" style={{ background: '#fee2e2', color: '#b91c1c' }}>
+                        {fixedFailuresByDate[dateKey].length} failed
+                      </span>
+                      <ChevronRight
+                        size={16}
+                        style={{
+                          transform: expandedFixedFailures[dateKey] === false ? 'rotate(90deg)' : 'rotate(0deg)',
+                          transition: 'transform 0.12s ease'
+                        }}
+                      />
+                    </div>
+                  </div>
+                  {expandedFixedFailures[dateKey] !== false && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {fixedFailuresByDate[dateKey].map((item, idx) => (
+                        <div key={`${dateKey}-${idx}`} style={{ border: '1px solid #e2e8f0', borderRadius: '10px', padding: '10px', background: '#f8fafc' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <Truck size={16} />
+                              <span style={{ fontWeight: 700, color: '#0f172a' }}>{item.route_name}</span>
+                            </div>
+                            {item.route_id && (
+                              <span className="pill" style={{ background: '#e2e8f0', color: '#0f172a' }}>ID: {item.route_id}</span>
+                            )}
+                          </div>
+                          <div style={{ marginTop: '6px', color: '#475569', fontSize: '14px' }}>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' }}>
+                              <Users size={14} />
+                              <span>Driver ID: {item.driver_id || 'Unknown'}</span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                              <AlertCircle size={14} color="#b91c1c" style={{ marginTop: '2px' }} />
+                              <span style={{ color: '#b91c1c' }}>{item.reason}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      </>
+      )}
     </div>
   );
+  };
 
   const renderNotificationsTab = () => (
     <div className="panel" style={{ maxWidth: '720px' }}>
@@ -2650,13 +3530,33 @@ Content-Type: application/json
           <Bell size={20} />
           <h3 style={{ margin: 0 }}>Notifications</h3>
         </div>
-        <button className="ghost-button" onClick={fetchNotifications} disabled={notificationLoading}>
-          {notificationLoading ? 'Loading…' : 'Refresh'}
-        </button>
+         <div style={{ display: 'flex', gap: '8px' }}>
+           <button className="ghost-button" onClick={fetchNotifications} disabled={notificationLoading}>
+            {notificationLoading ? 'Loading...' : 'Refresh'}
+           </button>
+           <button className="ghost-button" onClick={() => setShowNotifSettings(true)}>
+             <Settings size={14} />
+             Settings
+           </button>
+         </div>
       </div>
       <p style={{ color: '#475569', marginBottom: '12px' }}>
         Incoming requests (driver, date, reason). Accept updates availability; reject moves to a rejected list. Use your API (Postman) to POST to {notificationEndpoint}.
       </p>
+      <div style={{ marginBottom: '12px' }}>
+        <label style={{ fontSize: '14px', fontWeight: '600', color: '#0f172a' }}>Response endpoint</label>
+        <input
+          type="text"
+          className="input"
+          value={notificationResponseEndpoint}
+          onChange={(e) => setNotificationResponseEndpoint(e.target.value)}
+          placeholder="Where to POST approval/rejection responses"
+          style={{ width: '100%', marginTop: '6px' }}
+        />
+        <p style={{ color: '#6b7280', marginTop: '6px', fontSize: '13px' }}>
+          Accept sends "approved". Rejection asks before sending; you can edit the message.
+        </p>
+      </div>
 
       <h4 style={{ margin: '12px 0 8px', color: '#0f172a' }}>Incoming</h4>
       {notifications.length === 0 ? (
@@ -2664,15 +3564,173 @@ Content-Type: application/json
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {notifications.map((n, idx) => (
-            <div key={`${n.id || idx}-${n.driver_name}-${n.date}`} style={{ border: '1px solid #e5e7eb', borderRadius: '12px', padding: '12px', display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
+            <div
+              key={`${n.id || idx}-${n.driver_name}-${n.date}`}
+              style={{
+                border: '1px solid #e5e7eb',
+                borderRadius: '12px',
+                padding: '12px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: '12px',
+                alignItems: 'center',
+                background:
+                  n.status === 'accepted'
+                    ? '#ecfdf3'
+                    : n.status === 'rejected'
+                      ? '#fef2f2'
+                      : '#fff',
+                borderColor:
+                  n.status === 'accepted'
+                    ? '#4ade80'
+                    : n.status === 'rejected'
+                      ? '#fca5a5'
+                      : '#e5e7eb'
+              }}
+            >
               <div>
-                <p style={{ margin: 0, fontWeight: 700 }}>{n.driver_name || 'Unknown driver'}</p>
-                <p style={{ margin: '4px 0', color: '#475569', fontSize: '14px' }}>{n.date || 'No date'} • {n.reason || n.message || 'No reason provided'}</p>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <p style={{ margin: 0, fontWeight: 700, color: '#0f172a', textDecoration: n.status === 'rejected' ? 'line-through' : 'none' }}>
+                    {n.driver_name || 'Unknown driver'}
+                  </p>
+                  {n.status && n.status !== 'pending' && (
+                    <span
+                      className="pill"
+                      style={{
+                        background: n.status === 'accepted' ? '#22c55e' : '#ef4444',
+                        color: '#fff'
+                      }}
+                    >
+                      {n.status}
+                    </span>
+                  )}
+                </div>
+                <p style={{
+                  margin: '4px 0',
+                  color: n.status === 'accepted' ? '#166534' : n.status === 'rejected' ? '#b91c1c' : '#475569',
+                  fontSize: '14px',
+                  textDecoration: n.status === 'rejected' ? 'line-through' : 'none'
+                }}>
+                  {`${n.date || 'No date'} -> ${n.reason || n.message || 'No reason provided'}`}
+                </p>
+                {n.responseMessage && (
+                  <p style={{ margin: 0, color: '#334155', fontSize: '13px' }}>
+                    Response sent: {n.responseMessage}
+                  </p>
+                )}
+                {n.actual_message && (
+                  <p style={{ margin: '4px 0 0', color: '#0f172a', fontSize: '13px' }}>
+                    <button className="ghost-button" onClick={() => setPendingView(n)} style={{ padding: '4px 8px' }}>
+                      View message
+                    </button>
+                  </p>
+                )}
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
+                {n.status === 'pending' && (
+                  <>
+                    <button className="ghost-button" onClick={() => rejectNotification(n)} disabled={notificationLoading}>Reject</button>
+                    <button className="primary-button" onClick={() => acceptNotification(n)} disabled={notificationLoading}>Accept</button>
+                  </>
+                )}
+                {n.status !== 'pending' && (
+                  <button className="ghost-button" disabled style={{ cursor: 'default' }}>
+                    {n.status === 'accepted' ? 'Accepted' : 'Rejected'}
+                  </button>
+                )}
                 <button className="ghost-button" onClick={() => deleteNotification(n)} disabled={notificationLoading}>Delete</button>
-                <button className="ghost-button" onClick={() => rejectNotification(n)} disabled={notificationLoading}>Reject</button>
-                <button className="primary-button" onClick={() => acceptNotification(n)} disabled={notificationLoading}>Accept</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+
+      <h4 style={{ margin: '16px 0 8px', color: '#0f172a' }}>Accepted</h4>
+      {acceptedNotifications.length === 0 ? (
+        <p style={{ color: '#6b7280' }}>No accepted notifications.</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {acceptedNotifications.map((n, idx) => (
+            <div
+              key={`${n.id || idx}-${n.driver_name}-${n.date}-accepted`}
+              style={{
+                border: '1px solid #4ade80',
+                borderRadius: '12px',
+                padding: '12px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: '12px',
+                alignItems: 'center',
+                background: '#ecfdf3'
+              }}
+            >
+              <div>
+                <p style={{ margin: 0, fontWeight: 700, color: '#0f172a' }}>{n.driver_name || 'Unknown driver'}</p>
+                <p style={{ margin: '4px 0', color: '#166534', fontSize: '14px' }}>
+                  {`${n.date || 'No date'} -> ${n.reason || n.message || 'No reason provided'}`}
+                </p>
+                {n.actual_message && (
+                  <p style={{ margin: 0, color: '#0f172a', fontSize: '13px' }}>
+                    <button className="ghost-button" onClick={() => setPendingView(n)} style={{ padding: '4px 8px' }}>
+                      View message
+                    </button>
+                  </p>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="ghost-button" onClick={() => setAcceptedNotifications((prev) => prev.filter((x) => x !== n))}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <h4 style={{ margin: '16px 0 8px', color: '#0f172a' }}>Rejected</h4>
+      {rejectedNotifications.length === 0 ? (
+        <p style={{ color: '#6b7280' }}>No rejected notifications.</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {rejectedNotifications.map((n, idx) => (
+            <div
+              key={`${n.id || idx}-${n.driver_name}-${n.date}-rejected`}
+              style={{
+                border: '1px solid #fca5a5',
+                borderRadius: '12px',
+                padding: '12px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: '12px',
+                alignItems: 'center',
+                background: '#fef2f2'
+              }}
+            >
+              <div>
+                <p style={{ margin: 0, fontWeight: 700, color: '#b91c1c', textDecoration: 'line-through' }}>
+                  {n.driver_name || 'Unknown driver'}
+                </p>
+                <p style={{ margin: '4px 0', color: '#b91c1c', fontSize: '14px' }}>
+                  {`${n.date || 'No date'} -> ${n.reason || n.message || 'No reason provided'}`}
+                </p>
+                {n.actual_message && (
+                  <p style={{ margin: 0, color: '#0f172a', fontSize: '13px' }}>
+                    <button className="ghost-button" onClick={() => setPendingView(n)} style={{ padding: '4px 8px' }}>
+                      View message
+                    </button>
+                  </p>
+                )}
+                {n.responseMessage && (
+                  <p style={{ margin: 0, color: '#334155', fontSize: '13px' }}>
+                    Response sent: {n.responseMessage}
+                  </p>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="ghost-button" onClick={() => setRejectedNotifications((prev) => prev.filter((x) => x !== n))}>
+                  Delete
+                </button>
               </div>
             </div>
           ))}
@@ -2746,14 +3804,16 @@ Content-Type: application/json
               onClick={() => {
                 setActiveTab(id);
                 if (id !== 'upload' && weekStart && validateMonday(weekStart)) {
-                  fetchWeeklyData(weekStart);
+                  fetchWeeklyData(weekStart, true);
                 }
               }}
             >
               <Icon size={16} />
               {label}
-              {id === 'notifications' && notifications.length > 0 && (
-                <span className="badge">{notifications.length}</span>
+              {id === 'notifications' && notifications.some((n) => (n.status || 'pending') === 'pending') && (
+                <span className="badge">
+                  {notifications.filter((n) => (n.status || 'pending') === 'pending').length}
+                </span>
               )}
             </button>
           ))}
@@ -2762,6 +3822,7 @@ Content-Type: application/json
 
       <div className="content-shell">
         <MessageBanner />
+        <UnassignedWarningBanner />
         <div>
           {activeTab === 'upload' && renderUploadTab()}
           {activeTab === 'drivers' && renderDriversTab()}
@@ -2788,6 +3849,121 @@ Content-Type: application/json
         }
       `}</style>
 
+      {pendingAccept && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <CheckCircle size={18} />
+              <h3 style={{ margin: 0 }}>Confirm availability update</h3>
+            </div>
+            <p style={{ color: '#475569', marginBottom: '10px' }}>
+              Select the driver and confirm details before marking unavailable.
+            </p>
+            <div style={{ display: 'grid', gap: '10px' }}>
+              <div>
+                <label style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>Driver</label>
+                <select
+                  className="input"
+                  value={acceptForm.driverId}
+                  onChange={(e) => setAcceptForm((f) => ({ ...f, driverId: e.target.value }))}
+                  style={{ width: '100%', marginTop: '6px' }}
+                >
+                  <option value="">Select driver</option>
+                  {drivers.map((d) => (
+                    <option key={d.driver_id} value={d.driver_id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>Date</label>
+                <input
+                  type="date"
+                  className="input"
+                  value={acceptForm.date}
+                  onChange={(e) => setAcceptForm((f) => ({ ...f, date: e.target.value }))}
+                  style={{ width: '100%', marginTop: '6px' }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>Notes</label>
+                <textarea
+                  className="input"
+                  rows={3}
+                  value={acceptForm.notes}
+                  onChange={(e) => setAcceptForm((f) => ({ ...f, notes: e.target.value }))}
+                  style={{ width: '100%', marginTop: '6px' }}
+                  placeholder="Reason or note"
+                />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '12px' }}>
+              <button className="ghost-button" onClick={() => setPendingAccept(null)} disabled={notificationLoading}>
+                Cancel
+              </button>
+              <button className="primary-button" onClick={handleAcceptConfirm} disabled={notificationLoading}>
+                Confirm & accept
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingRejection && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <AlertCircle size={18} />
+              <h3 style={{ margin: 0 }}>Send rejection response?</h3>
+            </div>
+            <p style={{ color: '#475569', marginBottom: '8px' }}>
+              Do you want to send a rejection message back? You can edit it below.
+            </p>
+            <textarea
+              className="input"
+              value={rejectionMessage}
+              onChange={(e) => setRejectionMessage(e.target.value)}
+              rows={3}
+              style={{ width: '100%', marginBottom: '10px' }}
+            />
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button className="ghost-button" onClick={() => setPendingRejection(null)} disabled={notificationLoading}>
+                Cancel
+              </button>
+              <button className="ghost-button" onClick={() => handleRejectionDecision(false)} disabled={notificationLoading}>
+                Reject only
+              </button>
+              <button className="primary-button" onClick={() => handleRejectionDecision(true)} disabled={notificationLoading}>
+                Send and reject
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingView && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <MessageCircle size={18} />
+              <h3 style={{ margin: 0 }}>Notification message</h3>
+            </div>
+            <p style={{ color: '#475569', marginBottom: '12px' }}>
+              {pendingView.driver_name || 'Driver'} — {pendingView.date || 'No date'}
+            </p>
+            <div style={{ background: '#0f172a', color: '#e2e8f0', padding: '12px', borderRadius: '10px', fontSize: '14px', whiteSpace: 'pre-wrap' }}>
+              {pendingView.actual_message || pendingView.message || pendingView.reason || 'No message provided.'}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
+              <button className="primary-button" onClick={() => setPendingView(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showPlanningPrompt && (
         <div className="modal-backdrop">
           <div className="modal">
@@ -2813,7 +3989,65 @@ Content-Type: application/json
                 onClick={triggerPlanning}
                 disabled={planningLoading}
               >
-                {planningLoading ? 'Sending…' : 'Yes, send it'}
+                {planningLoading ? 'SendingΓÇª' : 'Yes, send it'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showNotifSettings && (
+        <div className="modal-backdrop">
+          <div className="modal" style={{ maxWidth: '520px', border: '1px solid #e2e8f0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Settings size={16} />
+                <h3 style={{ margin: 0 }}>Notification settings</h3>
+              </div>
+              <button className="ghost-button" onClick={() => setShowNotifSettings(false)}>
+                <X size={14} />
+              </button>
+            </div>
+            <p style={{ color: '#475569', marginBottom: '12px' }}>
+              Control auto-refresh for incoming notifications.
+            </p>
+            <div style={{ display: 'grid', gap: '12px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', color: '#0f172a' }}>
+                <input
+                  type="checkbox"
+                  checked={draftPollingEnabled}
+                  onChange={(e) => setDraftPollingEnabled(e.target.checked)}
+                />
+                Enable auto-refresh
+              </label>
+              <div>
+                <label style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>Refresh interval (ms)</label>
+                <input
+                  type="number"
+                  className="input"
+                  value={draftPollingInterval}
+                  onChange={(e) => setDraftPollingInterval(Math.max(5000, Number(e.target.value) || 20000))}
+                  style={{ width: '100%', marginTop: '6px' }}
+                  min={5000}
+                />
+                <p style={{ color: '#6b7280', marginTop: '6px', fontSize: '13px' }}>
+                  Minimum 5000 ms. Lower values increase polling frequency.
+                </p>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '14px' }}>
+              <button className="ghost-button" onClick={() => setShowNotifSettings(false)}>
+                Cancel
+              </button>
+              <button
+                className="primary-button"
+                onClick={() => {
+                  setNotificationPollingEnabled(draftPollingEnabled);
+                  setNotificationPollingInterval(Math.max(5000, Number(draftPollingInterval) || 20000));
+                  setShowNotifSettings(false);
+                }}
+              >
+                Save
               </button>
             </div>
           </div>
